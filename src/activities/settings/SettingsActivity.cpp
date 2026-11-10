@@ -15,6 +15,7 @@
 
 #include "AboutActivity.h"
 #include "BleSettingsActivity.h"
+#include "BookOrbitSettingsActivity.h"
 #include "ButtonRemapActivity.h"
 #include "ClearCacheActivity.h"
 #include "ClockSettingsActivity.h"
@@ -136,6 +137,7 @@ void SettingsActivity::rebuildSettings() {
   }
   addAction(SettingsSection::Network, StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync);
   addAction(SettingsSection::Network, StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser);
+  addAction(SettingsSection::Network, StrId::STR_BOOKORBIT, SettingAction::BookOrbit);
   addAction(SettingsSection::Network, StrId::STR_PLUGINS, SettingAction::Plugins);
 
   // OTA fetches this board's own release asset (see OtaUpdater); boards whose
@@ -311,6 +313,9 @@ void SettingsActivity::toggleSelectedSetting() {
         break;
       case SettingAction::OPDSBrowser:
         startActivityForResult(std::make_unique<OpdsServerListActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::BookOrbit:
+        startActivityForResult(std::make_unique<BookOrbitSettingsActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::Network: {
         auto activity = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, false);

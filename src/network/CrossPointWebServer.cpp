@@ -37,6 +37,7 @@
 #include <cstring>
 #include <string_view>
 
+#include "BookOrbitStore.h"
 #include "ClippingStore.h"
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
@@ -341,6 +342,9 @@ class CrossPointWebServer::RouteHandler final : public RequestHandler {
         {"/api/opds", HTTP_GET, [](S& s) { s.handleGetOpdsServers(); }, nullptr},
         {"/api/opds", HTTP_POST, [](S& s) { s.handlePostOpdsServer(); }, nullptr},
         {"/api/opds/delete", HTTP_POST, [](S& s) { s.handleDeleteOpdsServer(); }, nullptr},
+
+        {"/api/bookorbit", HTTP_GET, [](S& s) { s.handleGetBookOrbit(); }, nullptr},
+        {"/api/bookorbit", HTTP_POST, [](S& s) { s.handlePostBookOrbit(); }, nullptr},
 
         // Browser-side plugins (JS on the SD card) + their generic capabilities.
         {"/api/plugins", HTTP_GET, [](S& s) { s.handlePluginList(); }, nullptr},
@@ -1915,6 +1919,59 @@ void CrossPointWebServer::handleDeleteOpdsServer() {
 
   OPDS_STORE.removeServer(static_cast<size_t>(idx));
   LOG_DBG("WEB", "Deleted OPDS server at index %d", idx);
+  server->send(200, "text/plain", "OK");
+}
+
+// ---- BookOrbit API ----
+
+void CrossPointWebServer::handleGetBookOrbit() const {
+  JsonDocument doc;
+  doc["enabled"] = BOOKORBIT_STORE.isEnabled();
+  doc["serverUrl"] = BOOKORBIT_STORE.getServerUrl();
+  doc["hasApiKey"] = !BOOKORBIT_STORE.getApiKey().empty();
+  doc["username"] = BOOKORBIT_STORE.getUsername();
+  doc["syncOnOpen"] = BOOKORBIT_STORE.getSyncOnOpen();
+  doc["syncOnClose"] = BOOKORBIT_STORE.getSyncOnClose();
+
+  std::string output;
+  serializeJson(doc, output);
+  server->send(200, "application/json", output.c_str());
+}
+
+void CrossPointWebServer::handlePostBookOrbit() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "text/plain", "Missing body");
+    return;
+  }
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, server->arg("plain"));
+  if (err) {
+    server->send(400, "text/plain", "Invalid JSON");
+    return;
+  }
+
+  if (doc["enabled"].is<bool>()) {
+    BOOKORBIT_STORE.setEnabled(doc["enabled"].as<bool>());
+  }
+  if (doc["serverUrl"].is<const char*>()) {
+    BOOKORBIT_STORE.setServerUrl(doc["serverUrl"].as<const char*>());
+  }
+  if (doc["apiKey"].is<const char*>() && strlen(doc["apiKey"].as<const char*>()) > 0) {
+    BOOKORBIT_STORE.setApiKey(doc["apiKey"].as<const char*>());
+  }
+  if (doc["username"].is<const char*>()) {
+    BOOKORBIT_STORE.setUsername(doc["username"].as<const char*>());
+  }
+  if (doc["syncOnOpen"].is<bool>()) {
+    BOOKORBIT_STORE.setSyncOnOpen(doc["syncOnOpen"].as<bool>());
+  }
+  if (doc["syncOnClose"].is<bool>()) {
+    BOOKORBIT_STORE.setSyncOnClose(doc["syncOnClose"].as<bool>());
+  }
+
+  BOOKORBIT_STORE.saveToFile();
+  LOG_DBG("WEB", "Saved BookOrbit configuration");
   server->send(200, "text/plain", "OK");
 }
 

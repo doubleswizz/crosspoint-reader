@@ -152,6 +152,10 @@ class CrossPointWebServer {
   void handlePostOpdsServer();
   void handleDeleteOpdsServer();
 
+  // BookOrbit handlers
+  void handleGetBookOrbit() const;
+  void handlePostBookOrbit();
+
   // Wi-Fi credential handlers
   void handleGetWifiNetworks() const;
   void handlePostWifiNetwork();

@@ -40,6 +40,7 @@
 
   <div id="wifi-container"></div>
   <div id="opds-container"></div>
+  <div id="bookorbit-container"></div>
 
   </main>
 <!--#include file="shared/Footer.html.inc" -->
@@ -610,7 +611,68 @@
     await loadSettings();
     await loadWifiNetworks();
     await loadOpdsServers();
+    await loadBookOrbit();
   })();
+
+  async function loadBookOrbit() {
+    try {
+      const resp = await fetch('/api/bookorbit');
+      if (!resp.ok) return;
+      const data = await resp.json();
+      renderBookOrbitSection(data);
+    } catch (e) {
+      console.error('BookOrbit load error:', e);
+    }
+  }
+
+  function renderBookOrbitSection(cfg) {
+    const container = document.getElementById('bookorbit-container');
+    if (!container) return;
+    let html = '<div class="card"><h2>BookOrbit Client</h2>' +
+      '<div class="item-card">' +
+        '<div class="item-field"><label>Enable BookOrbit</label>' +
+        '<input type="checkbox" id="bko-enabled"' + (cfg.enabled ? ' checked' : '') + '></div>' +
+        '<div class="item-field"><label>Server URL</label>' +
+        '<input type="text" id="bko-url" placeholder="http://192.168.1.100:6262" value="' + (cfg.serverUrl || '') + '"></div>' +
+        '<div class="item-field"><label>API Token / Key</label>' +
+        '<input type="password" id="bko-token" placeholder="' + (cfg.hasApiKey ? '••••••••' : 'Enter API token') + '"></div>' +
+        '<div class="item-field"><label>Sync on Book Open</label>' +
+        '<input type="checkbox" id="bko-open"' + (cfg.syncOnOpen ? ' checked' : '') + '></div>' +
+        '<div class="item-field"><label>Sync on Book Close</label>' +
+        '<input type="checkbox" id="bko-close"' + (cfg.syncOnClose ? ' checked' : '') + '></div>' +
+        '<div class="item-actions" style="margin-top:10px;">' +
+          '<button class="btn-small" onclick="saveBookOrbit()">Save BookOrbit Settings</button>' +
+        '</div>' +
+      '</div></div>';
+    container.innerHTML = html;
+  }
+
+  async function saveBookOrbit() {
+    const payload = {
+      enabled: document.getElementById('bko-enabled').checked,
+      serverUrl: document.getElementById('bko-url').value.trim(),
+      syncOnOpen: document.getElementById('bko-open').checked,
+      syncOnClose: document.getElementById('bko-close').checked
+    };
+    const token = document.getElementById('bko-token').value;
+    if (token) payload.apiKey = token;
+
+    try {
+      const res = await fetch('/api/bookorbit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        showWebToast('BookOrbit settings saved!', false);
+        await loadBookOrbit();
+      } else {
+        showWebToast('Failed to save BookOrbit settings', true);
+      }
+    } catch (e) {
+      showWebToast('Error saving BookOrbit settings', true);
+    }
+  }
 </script>
 </body>
 </html>

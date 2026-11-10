@@ -20,6 +20,7 @@ enum class SettingAction {
   ClockSettings,
   KOReaderSync,
   OPDSBrowser,
+  BookOrbit,
   Network,
   Bluetooth,
   ClearCache,
