@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <WiFi.h>
 
 #include "CrossPointSettings.h"
 #include "util/OpdsFilename.h"
@@ -255,6 +256,8 @@ HttpDownloader::DownloadError BookOrbitClient::downloadBook(BookOrbitBook& book,
   metaDoc["bookorbit"]["bookId"] = book.id;
   metaDoc["bookorbit"]["fileId"] = book.fileId;
   metaDoc["bookorbit"]["serverUrl"] = BOOKORBIT_STORE.getServerUrl();
+  metaDoc["progress"] = book.progress;
+  metaDoc["pendingSync"] = false;
 
   HalFile metaFile;
   if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
@@ -266,6 +269,115 @@ HttpDownloader::DownloadError BookOrbitClient::downloadBook(BookOrbitBook& book,
   book.localFilePath = filename;
   LOG_INF("BKO", "Successfully downloaded %s", filename.c_str());
   return HttpDownloader::OK;
+}
+
+bool BookOrbitClient::hasBookMetadata(const std::string& bookPath) {
+  const std::string metaPath = bookPath + ".meta.json";
+  return Storage.exists(metaPath.c_str());
+}
+
+bool BookOrbitClient::getBookMetadata(const std::string& bookPath, std::string& outFileId, std::string& outBookId,
+                                      float* outProgress) {
+  const std::string metaPath = bookPath + ".meta.json";
+  if (!Storage.exists(metaPath.c_str())) return false;
+
+  std::string fileContent;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, fileContent)) return false;
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, fileContent);
+  if (err) return false;
+
+  const char* fId = doc["bookorbit"]["fileId"];
+  const char* bId = doc["bookorbit"]["bookId"];
+  if (!fId || strlen(fId) == 0) return false;
+
+  outFileId = fId;
+  if (bId) outBookId = bId;
+  if (outProgress && doc["progress"].is<float>()) {
+    *outProgress = doc["progress"].as<float>();
+  }
+  return true;
+}
+
+void BookOrbitClient::recordBookProgress(const std::string& bookPath, float progressRatio) {
+  if (!BOOKORBIT_STORE.isEnabled()) return;
+  const std::string metaPath = bookPath + ".meta.json";
+  if (!Storage.exists(metaPath.c_str())) return;
+
+  std::string fileContent;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, fileContent)) {
+    return;
+  }
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, fileContent);
+  if (err) return;
+
+  const char* fileId = doc["bookorbit"]["fileId"];
+  if (!fileId || strlen(fileId) == 0) return;
+
+  doc["progress"] = progressRatio;
+
+  bool synced = false;
+  if (BOOKORBIT_STORE.getSyncOnClose() && WiFi.status() == WL_CONNECTED) {
+    synced = syncReadingProgress(fileId, progressRatio);
+  }
+
+  doc["pendingSync"] = !synced;
+
+  HalFile metaFile;
+  if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
+    serializeJson(doc, metaFile);
+    metaFile.close();
+  }
+}
+
+void BookOrbitClient::syncPendingProgress() {
+  if (!BOOKORBIT_STORE.isConfigured() || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  const std::string downloadDir = getDownloadDir();
+  auto dir = Storage.open(downloadDir.c_str());
+  if (!dir || !dir.isDirectory()) {
+    return;
+  }
+
+  dir.rewindDirectory();
+  std::vector<std::string> metaFiles;
+  char nameBuf[128];
+  for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+    if (entry.isDirectory()) continue;
+    entry.getName(nameBuf, sizeof(nameBuf));
+    const std::string name(nameBuf);
+    if (name.length() > 10 && name.rfind(".meta.json") == name.length() - 10) {
+      metaFiles.push_back(downloadDir + "/" + name);
+    }
+  }
+
+  for (const auto& metaPath : metaFiles) {
+    std::string content;
+    if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) continue;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, content)) continue;
+
+    const bool pendingSync = doc["pendingSync"] | false;
+    const char* fileId = doc["bookorbit"]["fileId"];
+    if (pendingSync && fileId && strlen(fileId) > 0) {
+      const float progress = doc["progress"] | 0.0f;
+      LOG_INF("BKO", "Syncing pending progress %.2f for file %s", progress, fileId);
+      if (syncReadingProgress(fileId, progress)) {
+        doc["pendingSync"] = false;
+        HalFile metaFile;
+        if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
+          serializeJson(doc, metaFile);
+          metaFile.close();
+        }
+      }
+    }
+  }
 }
 
 bool BookOrbitClient::syncReadingProgress(const std::string& fileId, float progressPercent, int currentPosition,

@@ -5,6 +5,7 @@
 #include <HalFrontlight.h>
 #include <I18n.h>
 
+#include "BookOrbitStore.h"
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
@@ -98,6 +99,9 @@ void EpubReaderMenuActivity::buildMenuItems(std::vector<MenuItem>& items, const 
   bool canSync = KOREADER_STORE.hasCredentials();
   for (size_t event = 0; !canSync && event < static_cast<size_t>(pluginevents::Event::COUNT); ++event) {
     canSync = pluginevents::anySubscriber(static_cast<pluginevents::Event>(event));
+  }
+  if (!canSync && BOOKORBIT_STORE.isConfigured()) {
+    canSync = true;
   }
   if (canSync) {
     items.push_back({MenuAction::SYNC, StrId::STR_SYNC_PROGRESS});

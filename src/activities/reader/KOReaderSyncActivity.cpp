@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cassert>
 
+#include "BookOrbitStore.h"
 #include "Epub/Section.h"
 #include "EpubReaderUtils.h"
 #include "KOReaderCredentialStore.h"
@@ -25,6 +26,7 @@
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"  // list icons for the compare rows
 #include "fontIds.h"
+#include "network/BookOrbitClient.h"
 #include "network/WifiPowerSaveGuard.h"
 #include "util/PluginEvents.h"
 #include "util/PluginHttp.h"
@@ -132,6 +134,10 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
   // stalls that surface as HTTP timeouts. WiFi is torn down when this activity exits.
   WiFi.setSleep(false);
   LOG_DBG("KOSync", "WiFi sleep disabled for sync");
+
+  if (BOOKORBIT_STORE.isEnabled()) {
+    BookOrbitClient::syncPendingProgress();
+  }
 
   if (pluginEventsOnly) {
     {

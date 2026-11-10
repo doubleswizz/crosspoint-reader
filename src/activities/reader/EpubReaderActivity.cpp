@@ -24,6 +24,7 @@
 #include <limits>
 
 #include "../../util/BookmarkFile.h"
+#include "BookOrbitStore.h"
 #include "BookmarkEntry.h"
 #include "ChapterBuildGate.h"
 #include "ClipSelectionActivity.h"
@@ -57,6 +58,7 @@
 #include "clippings/ClippingsManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/BookOrbitClient.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
@@ -312,6 +314,16 @@ bool EpubReaderActivity::loadBook() {
       currentSpineIndex = textSpineIndex;
       cachedVisibleTextOffset.reset();
       LOG_DBG("ERS", "Opened for first time, navigating to text reference at index %d", textSpineIndex);
+    }
+    if (BOOKORBIT_STORE.isEnabled()) {
+      std::string fileId, bookId;
+      float remoteProgress = 0.0f;
+      if (BookOrbitClient::getBookMetadata(epub->getPath(), fileId, bookId, &remoteProgress)) {
+        if (remoteProgress > 0.0f && remoteProgress < 1.0f) {
+          LOG_INF("ERS", "Restoring BookOrbit initial progress: %.2f%%", remoteProgress * 100.0f);
+          jumpToPercent(static_cast<int>(remoteProgress * 100.0f + 0.5f));
+        }
+      }
     }
   }
 
@@ -1355,6 +1367,11 @@ unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
 
 bool EpubReaderActivity::launchKOReaderSync() {
   flushReaderSession();
+
+  if (BOOKORBIT_STORE.isEnabled()) {
+    const float progressRatio = static_cast<float>(getProgressBasisPoints()) / 10000.0f;
+    BookOrbitClient::recordBookProgress(epub->getPath(), progressRatio);
+  }
 
   // Without a KOReader server the sync activity only brings the device online
   // and drains that outbox; a failed join exits back to the reader with the

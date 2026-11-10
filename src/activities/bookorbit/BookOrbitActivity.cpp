@@ -80,6 +80,7 @@ void BookOrbitActivity::loadShelf(ShelfView view) {
   }
 
   std::string err;
+  BookOrbitClient::syncPendingProgress();
   const bool ok = BookOrbitClient::fetchBooks(shelfQuery, books, err);
 
   if (!ok) {

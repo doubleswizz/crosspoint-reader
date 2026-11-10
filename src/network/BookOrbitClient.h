@@ -46,6 +46,19 @@ class BookOrbitClient {
   // Checks if a book exists on local storage
   static bool checkLocalAvailability(BookOrbitBook& book);
 
+  // Checks if a book has BookOrbit metadata sidecar (.meta.json)
+  static bool hasBookMetadata(const std::string& bookPath);
+
+  // Reads sidecar metadata (.meta.json)
+  static bool getBookMetadata(const std::string& bookPath, std::string& outFileId, std::string& outBookId,
+                              float* outProgress = nullptr);
+
+  // Records current book progress to sidecar and attempts to sync if online
+  static void recordBookProgress(const std::string& bookPath, float progressRatio);
+
+  // Scans BookOrbit download directory and pushes any pending progress syncs
+  static void syncPendingProgress();
+
   // SD download directory for BookOrbit books
   static std::string getDownloadDir();
 };
