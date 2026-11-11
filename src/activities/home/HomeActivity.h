@@ -20,9 +20,13 @@ class HomeActivity final : public Activity {
   bool hasOpdsServers = false;
   bool hasPlugins = false;
   bool hasBookOrbit = false;
-  // The home "library" slot (index 2) shows Plugins when any plugin is
-  // installed, otherwise OPDS. The index converters gate on its presence.
-  bool hasLibrarySlot() const { return hasPlugins || hasOpdsServers; }
+  // The home "library" slot (index 2) shows Plugins while the plugin system is
+  // enabled, otherwise OPDS when a server is configured. NONE hides the slot.
+  // NetworkModeSelectionActivity lists OPDS in exactly the other cases.
+  HomeMenuItem slotItem() const {
+    if (hasPlugins) return HomeMenuItem::PLUGINS;
+    return hasOpdsServers ? HomeMenuItem::OPDS_BROWSER : HomeMenuItem::NONE;
+  }
   bool hasContinueReading = false;
   bool coverRendered = false;      // Track if cover has been rendered once
   bool coverBufferStored = false;  // Track if cover buffer is stored
@@ -42,28 +46,30 @@ class HomeActivity final : public Activity {
   const bool cleanInitialRefresh;
 
   // Convert HomeMenuItem to menu index (used in onEnter)
-  static int menuItemToIndex(HomeMenuItem item, bool hasOpdsUrl, bool hasBookOrbit) {
+  static int menuItemToIndex(HomeMenuItem item, HomeMenuItem slot, bool hasBookOrbit) {
     int i = 0;
     if (item == HomeMenuItem::FILE_BROWSER) return i;
     ++i;
     if (item == HomeMenuItem::LIBRARY) return i;
     ++i;
-    if (item == HomeMenuItem::OPDS_BROWSER) return hasOpdsUrl ? i : 0;
-    if (hasOpdsUrl) ++i;
+    if (slot != HomeMenuItem::NONE && item == slot) return i;
+    if (item == HomeMenuItem::PLUGINS) return 0;
+    if (slot != HomeMenuItem::NONE) ++i;
     if (item == HomeMenuItem::BOOKORBIT) return hasBookOrbit ? i : 0;
     if (hasBookOrbit) ++i;
-    if (item == HomeMenuItem::FILE_TRANSFER) return i;
+    // File Transfer also opens the OPDS browser, so it returns there without its slot.
+    if (item == HomeMenuItem::FILE_TRANSFER || item == HomeMenuItem::OPDS_BROWSER) return i;
     ++i;
     if (item == HomeMenuItem::SETTINGS_MENU) return i;
     return 0;
   }
 
   // Convert menu index to HomeMenuItem (used in loop)
-  static HomeMenuItem indexToMenuItem(int idx, bool hasOpdsUrl, bool hasBookOrbit) {
+  static HomeMenuItem indexToMenuItem(int idx, HomeMenuItem slot, bool hasBookOrbit) {
     int i = 0;
     if (idx == i++) return HomeMenuItem::FILE_BROWSER;
     if (idx == i++) return HomeMenuItem::LIBRARY;
-    if (hasOpdsUrl && idx == i++) return HomeMenuItem::OPDS_BROWSER;
+    if (slot != HomeMenuItem::NONE && idx == i++) return slot;
     if (hasBookOrbit && idx == i++) return HomeMenuItem::BOOKORBIT;
     if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
     if (idx == i) return HomeMenuItem::SETTINGS_MENU;

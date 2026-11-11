@@ -32,7 +32,7 @@ int HomeActivity::getMenuItemCount() const {
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
-  if (hasLibrarySlot()) {
+  if (slotItem() != HomeMenuItem::NONE) {
     count++;
   }
   if (hasBookOrbit) {
@@ -254,13 +254,17 @@ void HomeActivity::onEnter() {
   if (coverGridUi) {
     fillCoverGridFromLibrary();
     resolveGridCoverPaths();
-    coverGridUi->begin(recentBooks, hasLibrarySlot(), hasContinueReading);
+    const HomeMenuItem slot = slotItem();
+    coverGridUi->begin(recentBooks,
+                       slot == HomeMenuItem::PLUGINS        ? CoverGridHomeUi::SlotTab::PLUGINS
+                       : slot == HomeMenuItem::OPDS_BROWSER ? CoverGridHomeUi::SlotTab::OPDS
+                                                            : CoverGridHomeUi::SlotTab::NONE,
+                       hasContinueReading);
   }
 
   const auto base = static_cast<int>(recentBooks.size());
-  selectorIndex = initialMenuItem == HomeMenuItem::NONE
-                      ? 0
-                      : base + menuItemToIndex(initialMenuItem, hasLibrarySlot(), hasBookOrbit);
+  selectorIndex =
+      initialMenuItem == HomeMenuItem::NONE ? 0 : base + menuItemToIndex(initialMenuItem, slotItem(), hasBookOrbit);
 
   // Trigger first update
   requestUpdate();
@@ -322,15 +326,18 @@ void HomeActivity::loop() {
       return;
     }
     const int menuIndex = selectorIndex - static_cast<int>(recentBooks.size());
-    switch (indexToMenuItem(menuIndex, hasLibrarySlot(), hasBookOrbit)) {
+    switch (indexToMenuItem(menuIndex, slotItem(), hasBookOrbit)) {
       case HomeMenuItem::FILE_BROWSER:
         onFileBrowserOpen();
         break;
       case HomeMenuItem::LIBRARY:
         onLibraryOpen();
         break;
-      case HomeMenuItem::OPDS_BROWSER:  // the library slot
-        hasPlugins ? onPluginsOpen() : onOpdsBrowserOpen();
+      case HomeMenuItem::PLUGINS:
+        onPluginsOpen();
+        break;
+      case HomeMenuItem::OPDS_BROWSER:
+        onOpdsBrowserOpen();
         break;
       case HomeMenuItem::BOOKORBIT:
         onBookOrbitOpen();
@@ -555,13 +562,13 @@ void HomeActivity::render(RenderLock&&) {
                                         tr(STR_SETTINGS_TITLE)};
   std::vector<UIIcon> menuIcons = {Folder, Library, Transfer, Settings};
 
-  if (hasLibrarySlot()) {
+  if (slotItem() != HomeMenuItem::NONE) {
     menuItems.insert(menuItems.begin() + 2, hasPlugins ? tr(STR_PLUGINS) : tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + 2, Plugins);
+    menuIcons.insert(menuIcons.begin() + 2, hasPlugins ? Plugins : Book);
   }
 
   if (hasBookOrbit) {
-    const size_t insertIdx = hasLibrarySlot() ? 3 : 2;
+    const size_t insertIdx = (slotItem() != HomeMenuItem::NONE) ? 3 : 2;
     menuItems.insert(menuItems.begin() + insertIdx, "BookOrbit");
     menuIcons.insert(menuIcons.begin() + insertIdx, Library);
   }
@@ -610,6 +617,6 @@ void HomeActivity::onFileTransferOpen() { activityManager.goToFileTransfer(); }
 
 void HomeActivity::onOpdsBrowserOpen() { activityManager.goToBrowser(); }
 
-void HomeActivity::onPluginsOpen() { activityManager.goToPlugins(hasOpdsServers); }
+void HomeActivity::onPluginsOpen() { activityManager.goToPlugins(); }
 
 void HomeActivity::onBookOrbitOpen() { activityManager.goToBookOrbit(); }
