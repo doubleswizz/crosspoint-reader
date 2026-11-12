@@ -48,7 +48,7 @@ const char* BookOrbitActivity::headerTitle() const { return headerTitleStr.c_str
 
 int BookOrbitActivity::listCount() const {
   if (state != State::BROWSING) return 0;
-  if (currentView == ShelfView::ROOT_MENU) return 3;
+  if (currentView == ShelfView::ROOT_MENU) return 4;
   return static_cast<int>(rowItems.size());
 }
 
@@ -435,18 +435,28 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
     snprintf(libSubtitle, sizeof(libSubtitle), "Browse your libraries");
   }
 
-  const TileDef tiles[3] = {
+  char syncSubtitle[64] = "2-way sync with server";
+  if (lastSyncPulledCount >= 0 || lastSyncPushedCount >= 0) {
+    if (lastSyncPulledCount == 0 && lastSyncPushedCount == 0) {
+      snprintf(syncSubtitle, sizeof(syncSubtitle), "All books up to date");
+    } else {
+      snprintf(syncSubtitle, sizeof(syncSubtitle), "Synced (%d pushed, %d updated)", std::max(0, lastSyncPushedCount),
+               std::max(0, lastSyncPulledCount));
+    }
+  }
+
+  const TileDef tiles[4] = {
       {"Continue Reading", "Pick up where you left off", fui::bitmapFromIcon(icon_book_open_32)},
       {"Search", "Find books, authors & series", fui::bitmapFromIcon(icon_search_32)},
       {"Libraries", libSubtitle, fui::bitmapFromIcon(icon_library_32)},
+      {"Sync Progress", syncSubtitle, fui::bitmapFromIcon(icon_refresh_cw_32)},
   };
 
   const fui::Rect area = screen.body();
-  const int16_t gap = 16;
-  const int16_t maxTileH = 128;
-  const int16_t rawTileH = static_cast<int16_t>((area.height - 2 * gap) / 3);
-  const int16_t tileH = std::clamp<int16_t>(rawTileH, 84, maxTileH);
-  const int16_t totalH = static_cast<int16_t>(3 * tileH + 2 * gap);
+  const int16_t gap = 12;
+  const int16_t rawTileH = static_cast<int16_t>((area.height - 3 * gap) / 4);
+  const int16_t tileH = std::clamp<int16_t>(rawTileH, 76, 110);
+  const int16_t totalH = static_cast<int16_t>(4 * tileH + 3 * gap);
   const int16_t startY = static_cast<int16_t>(area.y + std::max<int16_t>(0, (area.height - totalH) / 2));
 
   const int16_t titleLh = screen.target().lineHeight(theme.titleText.font);
@@ -454,7 +464,7 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
   const int16_t textGap = 6;
   const int16_t textBlockH = static_cast<int16_t>(titleLh + textGap + subLh);
 
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 4; ++i) {
     const fui::Rect card{area.x, static_cast<int16_t>(startY + i * (tileH + gap)), area.width, tileH};
     const bool selected = (nav.selected == i);
 
@@ -601,6 +611,8 @@ void BookOrbitActivity::activateIndex(int index) {
       launchSearch();
     } else if (index == 2) {
       loadLibrariesList();
+    } else if (index == 3) {
+      startProgressSync();
     }
     return;
   }
@@ -617,6 +629,35 @@ void BookOrbitActivity::activateIndex(int index) {
   if (index >= 0 && index < static_cast<int>(books.size())) {
     handleBookSelected(static_cast<size_t>(index));
   }
+}
+
+void BookOrbitActivity::startProgressSync() {
+  if (!BOOKORBIT_STORE.isConfigured()) {
+    RenderLock lock(*this);
+    errorMessage = "BookOrbit is not configured";
+    state = State::ERROR;
+    requestUpdate();
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    state = State::LOADING;
+    statusMessage = "Syncing reading progress...";
+  }
+  requestUpdate();
+
+  int pushed = 0, pulled = 0;
+  BookOrbitClient::syncAllProgress(&pushed, &pulled);
+  lastSyncPushedCount = pushed;
+  lastSyncPulledCount = pulled;
+
+  {
+    RenderLock lock(*this);
+    state = State::BROWSING;
+    currentView = ShelfView::ROOT_MENU;
+  }
+  requestUpdate();
 }
 
 // Leaving this Wi-Fi activity normally triggers a silent restart to Home (heap defrag),

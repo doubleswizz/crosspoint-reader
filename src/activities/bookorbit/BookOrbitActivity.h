@@ -74,6 +74,9 @@ class BookOrbitActivity final : public CatalogActivity {
   int pendingDownloadIndex = -1;
   std::string activeSearchQuery;
 
+  int lastSyncPushedCount = -1;
+  int lastSyncPulledCount = -1;
+
   bool isPaginatedView() const;
   int totalPages() const;
   void loadRootMenu();
@@ -82,4 +85,5 @@ class BookOrbitActivity final : public CatalogActivity {
   void rebuildRowItems();
   void handleBookSelected(size_t index);
   void openBook(const std::string& path);
+  void startProgressSync();
 };

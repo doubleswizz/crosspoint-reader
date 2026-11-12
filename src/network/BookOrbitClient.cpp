@@ -128,8 +128,11 @@ bool BookOrbitClient::checkLocalAvailability(BookOrbitBook& book) {
   if (Storage.exists(filename.c_str())) {
     book.isDownloaded = true;
     book.localFilePath = filename;
-    // Also read local sidecar progress if server progress is 0
-    if (book.progress <= 0.0f) {
+    // If book is downloaded and server returned valid progress, update local sidecar if newer
+    if (book.progress > 0.0f) {
+      updateLocalSidecarProgress(filename, book.progress);
+    } else {
+      // Otherwise read local sidecar progress if server progress is 0
       std::string fId, bId;
       float localProg = 0.0f;
       if (getBookMetadata(filename, fId, bId, &localProg) && localProg > 0.0f) {
@@ -719,4 +722,217 @@ bool BookOrbitClient::syncReadingProgress(const std::string& fileId, float progr
 
   LOG_INF("BKO", "Synced progress %.2f%% for file %s", pct100, fileId.c_str());
   return true;
+}
+
+void BookOrbitClient::updateLocalSidecarProgress(const std::string& bookPath, float serverRatio) {
+  const std::string metaPath = bookPath + ".meta.json";
+  if (!Storage.exists(metaPath.c_str())) return;
+
+  std::string fileContent;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, fileContent)) return;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, fileContent)) return;
+
+  const float currentProg = doc["progress"] | 0.0f;
+  const bool pendingSync = doc["pendingSync"] | false;
+
+  // Don't overwrite local unpushed progress if local is ahead of server
+  if (pendingSync && currentProg > serverRatio) {
+    return;
+  }
+
+  if (std::abs(serverRatio - currentProg) > 0.005f) {
+    doc["progress"] = serverRatio;
+    doc["serverProgress"] = serverRatio;
+    doc["remoteProgressPending"] = true;
+    doc["pendingSync"] = false;
+
+    HalFile metaFile;
+    if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
+      serializeJson(doc, metaFile);
+      metaFile.close();
+      LOG_INF("BKO", "Updated sidecar progress for %s to %.2f (pending reader jump)", bookPath.c_str(), serverRatio);
+    }
+  }
+}
+
+bool BookOrbitClient::checkAndConsumeRemoteProgress(const std::string& bookPath, float& outProgress) {
+  const std::string metaPath = bookPath + ".meta.json";
+  if (!Storage.exists(metaPath.c_str())) return false;
+
+  std::string fileContent;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, fileContent)) return false;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, fileContent)) return false;
+
+  const bool remotePending = doc["remoteProgressPending"] | false;
+  const float prog = doc["progress"] | 0.0f;
+
+  if (remotePending && prog > 0.0f) {
+    outProgress = prog;
+    doc["remoteProgressPending"] = false;
+    HalFile metaFile;
+    if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
+      serializeJson(doc, metaFile);
+      metaFile.close();
+    }
+    return true;
+  }
+  return false;
+}
+
+bool BookOrbitClient::pullRemoteProgress(int* outUpdatedCount) {
+  if (outUpdatedCount) *outUpdatedCount = 0;
+  if (!BOOKORBIT_STORE.isConfigured() || WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  std::string token, errMsg;
+  if (!ensureAuthenticated(token, errMsg)) {
+    return false;
+  }
+
+  const std::string downloadDir = getDownloadDir();
+  auto dir = Storage.open(downloadDir.c_str());
+  if (!dir || !dir.isDirectory()) {
+    return false;
+  }
+
+  dir.rewindDirectory();
+  std::vector<std::string> metaFiles;
+  char nameBuf[128];
+  for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+    if (entry.isDirectory()) continue;
+    entry.getName(nameBuf, sizeof(nameBuf));
+    const std::string name(nameBuf);
+    if (name.length() > 10 && name.rfind(".meta.json") == name.length() - 10) {
+      metaFiles.push_back(downloadDir + "/" + name);
+    }
+  }
+
+  int updated = 0;
+  for (const auto& metaPath : metaFiles) {
+    std::string content;
+    if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) continue;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, content)) continue;
+
+    const std::string fileId = jsonVariantToIdString(doc["bookorbit"]["fileId"]);
+    if (fileId.empty()) continue;
+
+    const std::string url = cleanBaseUrl(BOOKORBIT_STORE.getServerUrl()) + "/api/v1/reading-progress?fileId=" + fileId;
+    std::string response;
+    int status = 0;
+    HttpDownloader::FetchOptions opts;
+    opts.bearer = token;
+    opts.statusOut = &status;
+    const bool ok = HttpDownloader::fetchUrl(
+        url,
+        [&response](const uint8_t* data, size_t len) {
+          if (response.size() + len < 4096) {
+            response.append(reinterpret_cast<const char*>(data), len);
+          }
+          return true;
+        },
+        opts);
+    if (!ok || status != 200) {
+      continue;
+    }
+
+    JsonDocument respDoc;
+    if (deserializeJson(respDoc, response)) continue;
+
+    if (!respDoc["items"].is<JsonArrayConst>() || respDoc["items"].as<JsonArrayConst>().size() == 0) {
+      continue;
+    }
+
+    JsonObjectConst item = respDoc["items"][0];
+    if (!item["percentage"].is<float>()) continue;
+
+    const float serverPct = item["percentage"].as<float>();
+    const float serverRatio = serverPct / 100.0f;
+    const float currentProg = doc["progress"] | 0.0f;
+    const bool pendingSync = doc["pendingSync"] | false;
+
+    // If local has unpushed progress ahead of server, don't clobber it
+    if (pendingSync && currentProg > serverRatio) {
+      continue;
+    }
+
+    if (std::abs(serverRatio - currentProg) > 0.005f) {
+      LOG_INF("BKO", "Pulled newer server progress for %s: %.2f -> %.2f", fileId.c_str(), currentProg, serverRatio);
+      doc["progress"] = serverRatio;
+      doc["serverProgress"] = serverRatio;
+      doc["remoteProgressPending"] = true;
+      doc["pendingSync"] = false;
+
+      HalFile metaFile;
+      if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
+        serializeJson(doc, metaFile);
+        metaFile.close();
+        updated++;
+      }
+    }
+  }
+
+  if (outUpdatedCount) *outUpdatedCount = updated;
+  return true;
+}
+
+bool BookOrbitClient::syncAllProgress(int* outPushedCount, int* outPulledCount) {
+  if (outPushedCount) *outPushedCount = 0;
+  if (outPulledCount) *outPulledCount = 0;
+
+  if (!BOOKORBIT_STORE.isConfigured() || WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  // 1. Scan and push any dirty local progress
+  int pushed = 0;
+  const std::string downloadDir = getDownloadDir();
+  auto dir = Storage.open(downloadDir.c_str());
+  if (dir && dir.isDirectory()) {
+    dir.rewindDirectory();
+    std::vector<std::string> metaFiles;
+    char nameBuf[128];
+    for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+      if (entry.isDirectory()) continue;
+      entry.getName(nameBuf, sizeof(nameBuf));
+      const std::string name(nameBuf);
+      if (name.length() > 10 && name.rfind(".meta.json") == name.length() - 10) {
+        metaFiles.push_back(downloadDir + "/" + name);
+      }
+    }
+
+    for (const auto& metaPath : metaFiles) {
+      std::string content;
+      if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) continue;
+
+      JsonDocument doc;
+      if (deserializeJson(doc, content)) continue;
+
+      const bool pendingSync = doc["pendingSync"] | false;
+      const std::string fileId = jsonVariantToIdString(doc["bookorbit"]["fileId"]);
+      if (pendingSync && !fileId.empty()) {
+        const float progress = doc["progress"] | 0.0f;
+        LOG_INF("BKO", "Syncing pending progress %.2f for file %s", progress, fileId.c_str());
+        if (syncReadingProgress(fileId, progress)) {
+          doc["pendingSync"] = false;
+          HalFile metaFile;
+          if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
+            serializeJson(doc, metaFile);
+            metaFile.close();
+            pushed++;
+          }
+        }
+      }
+    }
+  }
+  if (outPushedCount) *outPushedCount = pushed;
+
+  // 2. Pull latest server progress for all downloaded books
+  return pullRemoteProgress(outPulledCount);
 }

@@ -77,6 +77,18 @@ class BookOrbitClient {
   // Records current book progress to sidecar and attempts to sync if online
   static void recordBookProgress(const std::string& bookPath, float progressRatio);
 
+  // Updates local sidecar metadata with server progress if newer
+  static void updateLocalSidecarProgress(const std::string& bookPath, float serverRatio);
+
+  // Pulls updated reading progress from server for all locally downloaded books
+  static bool pullRemoteProgress(int* outUpdatedCount = nullptr);
+
+  // Performs full 2-way progress sync: pushes dirty local progress and pulls latest server progress
+  static bool syncAllProgress(int* outPushedCount = nullptr, int* outPulledCount = nullptr);
+
+  // Checks and consumes pending remote progress for a book upon opening
+  static bool checkAndConsumeRemoteProgress(const std::string& bookPath, float& outProgress);
+
   // Scans BookOrbit download directory and pushes any pending progress syncs
   static void syncPendingProgress();
 

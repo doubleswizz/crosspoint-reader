@@ -308,22 +308,33 @@ bool EpubReaderActivity::loadBook() {
     }
   }
 
-  if (currentSpineIndex == 0) {
+  bool jumpedToRemote = false;
+  if (BOOKORBIT_STORE.isEnabled()) {
+    float remoteProgress = 0.0f;
+    if (BookOrbitClient::checkAndConsumeRemoteProgress(epub->getPath(), remoteProgress)) {
+      if (remoteProgress > 0.0f && remoteProgress <= 1.0f) {
+        LOG_INF("ERS", "Restoring BookOrbit synced progress: %.2f%%", remoteProgress * 100.0f);
+        jumpToPercent(static_cast<int>(remoteProgress * 100.0f + 0.5f));
+        jumpedToRemote = true;
+      }
+    } else if (currentSpineIndex == 0) {
+      std::string fileId, bookId;
+      if (BookOrbitClient::getBookMetadata(epub->getPath(), fileId, bookId, &remoteProgress)) {
+        if (remoteProgress > 0.0f && remoteProgress <= 1.0f) {
+          LOG_INF("ERS", "Restoring BookOrbit initial progress: %.2f%%", remoteProgress * 100.0f);
+          jumpToPercent(static_cast<int>(remoteProgress * 100.0f + 0.5f));
+          jumpedToRemote = true;
+        }
+      }
+    }
+  }
+
+  if (!jumpedToRemote && currentSpineIndex == 0) {
     int textSpineIndex = epub->getSpineIndexForTextReference();
     if (textSpineIndex != 0) {
       currentSpineIndex = textSpineIndex;
       cachedVisibleTextOffset.reset();
       LOG_DBG("ERS", "Opened for first time, navigating to text reference at index %d", textSpineIndex);
-    }
-    if (BOOKORBIT_STORE.isEnabled()) {
-      std::string fileId, bookId;
-      float remoteProgress = 0.0f;
-      if (BookOrbitClient::getBookMetadata(epub->getPath(), fileId, bookId, &remoteProgress)) {
-        if (remoteProgress > 0.0f && remoteProgress < 1.0f) {
-          LOG_INF("ERS", "Restoring BookOrbit initial progress: %.2f%%", remoteProgress * 100.0f);
-          jumpToPercent(static_cast<int>(remoteProgress * 100.0f + 0.5f));
-        }
-      }
     }
   }
 
