@@ -13,7 +13,6 @@
 #include "BookOrbitStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
-#include "RecentBooksStore.h"
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -23,7 +22,6 @@
 #include "components/icons/listIcons.h"
 #include "components/icons/opdsIcons.h"
 #include "components/icons/search32.h"
-#include "util/BookProgress.h"
 #include "util/OpdsFilename.h"
 
 namespace fui = freeink::ui;
@@ -55,7 +53,7 @@ const char* BookOrbitActivity::headerTitle() const { return headerTitleStr.c_str
 
 int BookOrbitActivity::listCount() const {
   if (state != State::BROWSING) return 0;
-  if (currentView == ShelfView::ROOT_MENU) return hasResumeBook() ? 5 : 4;
+  if (currentView == ShelfView::ROOT_MENU) return 4;
   return static_cast<int>(rowItems.size());
 }
 
@@ -155,89 +153,6 @@ void BookOrbitActivity::onPageEvent(const fui::ActionEvent& event, void* user) {
   if (nextPage != self->currentPage) {
     self->loadShelf(self->currentView, nextPage);
   }
-}
-
-bool BookOrbitActivity::findLastOpenedBook(std::string& outPath, std::string& outTitle, std::string& outAuthor,
-                                           int& outProgress) const {
-  outPath.clear();
-  outTitle.clear();
-  outAuthor.clear();
-  outProgress = -1;
-
-  const std::string bkoDir = BookOrbitClient::getDownloadDir();
-
-  // 1. Look for most recent BookOrbit book in RECENT_BOOKS
-  for (const auto& r : RECENT_BOOKS.getBooks()) {
-    if (r.path.rfind(bkoDir, 0) == 0 && Storage.exists(r.path.c_str())) {
-      outPath = r.path;
-      outTitle = r.title;
-      outAuthor = r.author;
-      break;
-    }
-  }
-
-  // 2. If not found in RECENT_BOOKS, check APP_STATE.openEpubPath if in BookOrbit dir
-  if (outPath.empty() && !APP_STATE.openEpubPath.empty() && APP_STATE.openEpubPath.rfind(bkoDir, 0) == 0 &&
-      Storage.exists(APP_STATE.openEpubPath.c_str())) {
-    outPath = APP_STATE.openEpubPath;
-  }
-
-  // 3. Fallback to any recent book in RECENT_BOOKS that exists on storage
-  if (outPath.empty()) {
-    for (const auto& r : RECENT_BOOKS.getBooks()) {
-      if (Storage.exists(r.path.c_str())) {
-        outPath = r.path;
-        outTitle = r.title;
-        outAuthor = r.author;
-        break;
-      }
-    }
-  }
-
-  // 4. Fallback to APP_STATE.openEpubPath if valid
-  if (outPath.empty() && !APP_STATE.openEpubPath.empty() && Storage.exists(APP_STATE.openEpubPath.c_str())) {
-    outPath = APP_STATE.openEpubPath;
-  }
-
-  if (outPath.empty()) {
-    return false;
-  }
-
-  // Populate title & author from sidecar .meta.json if missing
-  const std::string metaPath = outPath + ".meta.json";
-  std::string metaContent;
-  if (Storage.exists(metaPath.c_str()) && Storage.readFileToString("BKO", metaPath.c_str(), 1024, metaContent)) {
-    JsonDocument doc;
-    if (!deserializeJson(doc, metaContent)) {
-      if (outTitle.empty()) outTitle = doc["title"] | "";
-      if (outAuthor.empty()) outAuthor = doc["author"] | "";
-    }
-  }
-
-  // Fallback title from filename
-  if (outTitle.empty()) {
-    size_t slash = outPath.rfind('/');
-    std::string name = (slash != std::string::npos) ? outPath.substr(slash + 1) : outPath;
-    if (name.length() > 5 && name.rfind(".epub") == name.length() - 5) {
-      name = name.substr(0, name.length() - 5);
-    }
-    size_t dash = name.find(" - ");
-    if (dash != std::string::npos) {
-      if (outAuthor.empty()) outAuthor = name.substr(0, dash);
-      outTitle = name.substr(dash + 3);
-    } else {
-      outTitle = name;
-    }
-  }
-
-  outProgress = loadBookProgress(outPath);
-  return true;
-}
-
-bool BookOrbitActivity::hasResumeBook() const {
-  std::string path, title, author;
-  int prog = -1;
-  return findLastOpenedBook(path, title, author, prog);
 }
 
 void BookOrbitActivity::ensureWifi(std::function<void()> onConnected) {
@@ -564,26 +479,10 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
     std::string title;
     std::string subtitle;
     fui::BitmapRef icon;
-    bool isResume = false;
   };
 
   std::vector<TileDef> tiles;
-  tiles.reserve(5);
-
-  std::string resumePath, resumeTitle, resumeAuthor;
-  int resumeProg = -1;
-  const bool hasResume = findLastOpenedBook(resumePath, resumeTitle, resumeAuthor, resumeProg);
-
-  if (hasResume) {
-    std::string sub = "Resume";
-    if (!resumeAuthor.empty()) {
-      sub += " \xC2\xB7 " + resumeAuthor;
-    }
-    if (resumeProg >= 0) {
-      sub += " \xC2\xB7 " + std::to_string(resumeProg) + "%";
-    }
-    tiles.push_back({std::move(resumeTitle), std::move(sub), fui::bitmapFromIcon(icon_book_open_32), true});
-  }
+  tiles.reserve(4);
 
   char libSubtitle[64];
   if (!libraries.empty()) {
@@ -603,22 +502,22 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
     }
   }
 
-  tiles.push_back({"Continue Reading", "Pick up where you left off", fui::bitmapFromIcon(icon_book_open_32), false});
-  tiles.push_back({"Search", "Find books, authors & series", fui::bitmapFromIcon(icon_search_32), false});
-  tiles.push_back({"Libraries", libSubtitle, fui::bitmapFromIcon(icon_library_32), false});
-  tiles.push_back({"Sync Progress", syncSubtitle, fui::bitmapFromIcon(icon_refresh_cw_32), false});
+  tiles.push_back({"Continue Reading", "Pick up where you left off", fui::bitmapFromIcon(icon_book_open_32)});
+  tiles.push_back({"Search", "Find books, authors & series", fui::bitmapFromIcon(icon_search_32)});
+  tiles.push_back({"Libraries", libSubtitle, fui::bitmapFromIcon(icon_library_32)});
+  tiles.push_back({"Sync Progress", syncSubtitle, fui::bitmapFromIcon(icon_refresh_cw_32)});
 
   const int numTiles = static_cast<int>(tiles.size());
   const fui::Rect area = screen.body();
-  const int16_t gap = (numTiles >= 5) ? 10 : 12;
+  const int16_t gap = 12;
   const int16_t rawTileH = static_cast<int16_t>((area.height - (numTiles - 1) * gap) / numTiles);
-  const int16_t tileH = std::clamp<int16_t>(rawTileH, 68, 105);
+  const int16_t tileH = std::clamp<int16_t>(rawTileH, 76, 110);
   const int16_t totalH = static_cast<int16_t>(numTiles * tileH + (numTiles - 1) * gap);
   const int16_t startY = static_cast<int16_t>(area.y + std::max<int16_t>(0, (area.height - totalH) / 2));
 
   const int16_t titleLh = screen.target().lineHeight(theme.titleText.font);
   const int16_t subLh = screen.target().lineHeight(theme.smallText.font);
-  const int16_t textGap = 4;
+  const int16_t textGap = 6;
   const int16_t textBlockH = static_cast<int16_t>(titleLh + textGap + subLh);
 
   for (int i = 0; i < numTiles; ++i) {
@@ -637,12 +536,11 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
     const uint8_t radius = theme.controlRadius > 0 ? theme.controlRadius : 14;
 
     screen.target().fill(card, bg, radius);
-    const int16_t strokeW = tiles[i].isResume ? 3 : 2;
-    screen.target().stroke(card, fui::Paint::solid(fui::Color::Black), strokeW, radius);
+    screen.target().stroke(card, fui::Paint::solid(fui::Color::Black), 2, radius);
 
     // Leading 32x32 icon badge
     const int16_t iconSize = 32;
-    const int16_t iconX = static_cast<int16_t>(card.x + 20);
+    const int16_t iconX = static_cast<int16_t>(card.x + 22);
     const int16_t iconY = static_cast<int16_t>(card.y + (card.height - iconSize) / 2);
     screen.target().bitmap(fui::Rect{iconX, iconY, iconSize, iconSize}, tiles[i].icon, fui::BitmapMode::Center, fg);
 
@@ -654,7 +552,7 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
                            fui::BitmapMode::Center, fg);
 
     // Title + subtitle text column
-    const int16_t textX = static_cast<int16_t>(iconX + iconSize + 16);
+    const int16_t textX = static_cast<int16_t>(iconX + iconSize + 18);
     const int16_t textW = static_cast<int16_t>(chevX - textX - 10);
     const int16_t textY = static_cast<int16_t>(card.y + (card.height - textBlockH) / 2);
 
@@ -765,17 +663,7 @@ void BookOrbitActivity::activateIndex(int index) {
   if (index < 0 || index >= listCount()) return;
 
   if (currentView == ShelfView::ROOT_MENU) {
-    const bool hasResume = hasResumeBook();
-    if (hasResume && index == 0) {
-      std::string path, title, author;
-      int prog = -1;
-      if (findLastOpenedBook(path, title, author, prog)) {
-        openBook(path);
-      }
-      return;
-    }
-
-    const int actionIdx = hasResume ? (index - 1) : index;
+    const int actionIdx = index;
     if (actionIdx == 0) {
       loadShelf(ShelfView::CURRENTLY_READING, 0);
     } else if (actionIdx == 1) {
