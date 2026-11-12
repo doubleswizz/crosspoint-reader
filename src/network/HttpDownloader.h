@@ -104,7 +104,14 @@ class HttpDownloader {
    * "Authorization: Bearer <token>". Returns true when response status is 2xx.
    */
   static bool postJson(const std::string& url, const std::string& jsonBody, std::string& outResponse,
-                       const std::string& bearer = "", int* statusOut = nullptr);
+                       const std::string& bearer = "", int* statusOut = nullptr, size_t maxResponseBytes = 4096);
+
+  /**
+   * PUT an application/json body (e.g. BookOrbit reading progress)
+   * and collect the response body into outResponse. Returns true when response status is 2xx.
+   */
+  static bool putJson(const std::string& url, const std::string& jsonBody, std::string& outResponse,
+                      const std::string& bearer = "", int* statusOut = nullptr);
 
   /**
    * Download a file to the SD card with optional credentials. `headers` are

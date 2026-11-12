@@ -1,9 +1,11 @@
 #include "BookOrbitSettingsActivity.h"
 
 #include <Logging.h>
+#include <WiFi.h>
 
 #include "BookOrbitStore.h"
 #include "activities/ActivityManager.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -14,13 +16,15 @@ namespace fui = freeink::ui;
 namespace {
 constexpr int IDX_ENABLED = 0;
 constexpr int IDX_SERVER_URL = 1;
-constexpr int IDX_API_KEY = 2;
-constexpr int IDX_SYNC_ON_OPEN = 3;
-constexpr int IDX_SYNC_ON_CLOSE = 4;
-constexpr int IDX_TEST_CONNECTION = 5;
+constexpr int IDX_USERNAME = 2;
+constexpr int IDX_API_KEY = 3;
+constexpr int IDX_SYNC_ON_OPEN = 4;
+constexpr int IDX_SYNC_ON_CLOSE = 5;
+constexpr int IDX_TEST_CONNECTION = 6;
 
 const char* menuLabels[BookOrbitSettingsActivity::MENU_ITEMS] = {
-    "Enable BookOrbit", "Server URL", "API Token / Key", "Sync On Book Open", "Sync On Book Close", "Test Connection"};
+    "Enable BookOrbit",  "Server URL",         "Username",       "Password / API Key",
+    "Sync On Book Open", "Sync On Book Close", "Test Connection"};
 }  // namespace
 
 BookOrbitSettingsActivity::BookOrbitSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -49,7 +53,7 @@ void BookOrbitSettingsActivity::activateIndex(const int index) {
     requestUpdate();
   } else if (index == IDX_SERVER_URL) {
     const std::string currentUrl = BOOKORBIT_STORE.getServerUrl();
-    const std::string prefillUrl = currentUrl.empty() ? "http://" : currentUrl;
+    const std::string prefillUrl = currentUrl.empty() ? "https://" : currentUrl;
     startActivityForResult(
         std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, "Server URL", prefillUrl, 128, InputType::Url),
         [this](const ActivityResult& result) {
@@ -61,10 +65,21 @@ void BookOrbitSettingsActivity::activateIndex(const int index) {
             requestUpdate();
           }
         });
+  } else if (index == IDX_USERNAME) {
+    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, "Username",
+                                                                   BOOKORBIT_STORE.getUsername(), 64, InputType::Text),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled) {
+                               const auto& kb = std::get<KeyboardResult>(result.data);
+                               BOOKORBIT_STORE.setUsername(kb.text);
+                               BOOKORBIT_STORE.saveToFile();
+                               requestUpdate();
+                             }
+                           });
   } else if (index == IDX_API_KEY) {
     startActivityForResult(
-        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, "API Token", BOOKORBIT_STORE.getApiKey(), 128,
-                                                InputType::Password),
+        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, "Password / API Key",
+                                                BOOKORBIT_STORE.getApiKey(), 128, InputType::Password),
         [this](const ActivityResult& result) {
           if (!result.isCancelled) {
             const auto& kb = std::get<KeyboardResult>(result.data);
@@ -82,12 +97,23 @@ void BookOrbitSettingsActivity::activateIndex(const int index) {
     BOOKORBIT_STORE.saveToFile();
     requestUpdate();
   } else if (index == IDX_TEST_CONNECTION) {
-    std::string err;
-    const bool ok = BookOrbitClient::testConnection(err);
-    const std::string msg = ok ? "Successfully connected to BookOrbit server!" : ("Connection error: " + err);
-    startActivityForResult(
-        std::make_unique<ConfirmationActivity>(renderer, mappedInput, "Connection Test", msg, "", "OK"),
-        [](const ActivityResult&) {});
+    if (!BOOKORBIT_STORE.isConfigured()) return;
+    auto runTest = [this]() {
+      std::string err;
+      const bool ok = BookOrbitClient::testConnection(err);
+      const std::string msg = ok ? "Successfully connected to BookOrbit server!" : ("Connection error: " + err);
+      startActivityForResult(
+          std::make_unique<ConfirmationActivity>(renderer, mappedInput, "Connection Test", msg, "", "OK"),
+          [](const ActivityResult&) {});
+    };
+    if (WiFi.status() == WL_CONNECTED) {
+      runTest();
+    } else {
+      startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+                             [runTest](const ActivityResult& result) {
+                               if (!result.isCancelled) runTest();
+                             });
+    }
   }
 }
 
@@ -99,6 +125,7 @@ void BookOrbitSettingsActivity::buildScreen(UiScreen& screen) {
 
   rowValues_[IDX_ENABLED] = BOOKORBIT_STORE.isEnabled() ? "Enabled" : "Disabled";
   rowValues_[IDX_SERVER_URL] = BOOKORBIT_STORE.getServerUrl().empty() ? "[Not Set]" : BOOKORBIT_STORE.getServerUrl();
+  rowValues_[IDX_USERNAME] = BOOKORBIT_STORE.getUsername().empty() ? "[Optional]" : BOOKORBIT_STORE.getUsername();
   rowValues_[IDX_API_KEY] = BOOKORBIT_STORE.getApiKey().empty() ? "[Not Set]" : "********";
   rowValues_[IDX_SYNC_ON_OPEN] = BOOKORBIT_STORE.getSyncOnOpen() ? "Yes" : "No";
   rowValues_[IDX_SYNC_ON_CLOSE] = BOOKORBIT_STORE.getSyncOnClose() ? "Yes" : "No";

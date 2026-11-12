@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <HalStorage.h>
+#include <I18n.h>
 #include <Logging.h>
 
 #include "BookOrbitStore.h"
@@ -18,81 +19,166 @@ BookOrbitActivity::BookOrbitActivity(GfxRenderer& renderer, MappedInputManager& 
 
 void BookOrbitActivity::onEnter() {
   CatalogActivity::onEnter();
-  if (state == State::LOADING) {
-    statusMessage = "Connecting to BookOrbit...";
-    requestUpdate();
-  }
+  state = State::CHECK_WIFI;
+  statusMessage = tr(STR_CHECKING_WIFI);
+  checkAndConnectWifi();
 }
 
 void BookOrbitActivity::onExit() { CatalogActivity::onExit(); }
 
-const char* BookOrbitActivity::headerTitle() const {
-  switch (currentView) {
-    case ShelfView::CURRENTLY_READING:
-      return "BookOrbit: Currently Reading";
-    case ShelfView::WANT_TO_READ:
-      return "BookOrbit: Want to Read";
-    case ShelfView::ALL_BOOKS:
-      return "BookOrbit: All Books";
-    case ShelfView::SEARCH_RESULTS:
-      return "BookOrbit: Search Results";
+const char* BookOrbitActivity::headerTitle() const { return headerTitleStr.c_str(); }
+
+int BookOrbitActivity::listCount() const { return state == State::BROWSING ? static_cast<int>(rowItems.size()) : 0; }
+
+void BookOrbitActivity::startBrowse() {
+  if (currentView == ShelfView::ROOT_MENU) {
+    loadRootMenu();
+  } else {
+    loadShelf(currentView, currentPage);
   }
-  return "BookOrbit";
 }
 
-int BookOrbitActivity::listCount() const { return static_cast<int>(rowItems.size()); }
+void BookOrbitActivity::retryBrowse() { startBrowse(); }
 
-void BookOrbitActivity::startBrowse() { loadShelf(currentView); }
-
-void BookOrbitActivity::retryBrowse() { loadShelf(currentView); }
+void BookOrbitActivity::onBackButton() {
+  if (state == State::BROWSING && currentView != ShelfView::ROOT_MENU) {
+    activeSearchQuery.clear();
+    loadRootMenu();
+    return;
+  }
+  finish();
+}
 
 void BookOrbitActivity::performSearch(const std::string& query) {
   if (query.empty()) {
-    currentView = ShelfView::CURRENTLY_READING;
-    startBrowse();
+    activeSearchQuery.clear();
+    loadRootMenu();
     return;
   }
   activeSearchQuery = query;
   currentView = ShelfView::SEARCH_RESULTS;
-  loadShelf(currentView);
+  loadShelf(currentView, 0);
 }
 
-void BookOrbitActivity::loadShelf(ShelfView view) {
-  currentView = view;
-  state = State::LOADING;
-  statusMessage = "Fetching books...";
-  requestUpdate();
+void BookOrbitActivity::loadRootMenu() {
+  currentView = ShelfView::ROOT_MENU;
+  currentPage = 0;
+  totalBooks = 0;
+  hasPrevPageRow = false;
+  hasNextPageRow = false;
+  headerTitleStr = "BookOrbit";
 
-  std::string shelfQuery;
-  switch (view) {
-    case ShelfView::CURRENTLY_READING:
-      shelfQuery = "currently-reading";
-      break;
-    case ShelfView::WANT_TO_READ:
-      shelfQuery = "want-to-read";
-      break;
-    case ShelfView::ALL_BOOKS:
-      shelfQuery = "";
-      break;
-    case ShelfView::SEARCH_RESULTS:
-      shelfQuery = "/api/v1/books?q=" + activeSearchQuery;
-      break;
+  {
+    RenderLock lock(*this);
+    state = State::LOADING;
+    statusMessage = "Connecting to BookOrbit...";
   }
+  requestUpdate(true);
 
   std::string err;
   BookOrbitClient::syncPendingProgress();
-  const bool ok = BookOrbitClient::fetchBooks(shelfQuery, books, err);
-
-  if (!ok) {
-    errorMessage = err.empty() ? "Failed to fetch books from BookOrbit" : err;
-    state = State::ERROR;
+  if (!BookOrbitClient::fetchLibraries(libraries, err)) {
+    {
+      RenderLock lock(*this);
+      errorMessage = err.empty() ? "Failed to connect to BookOrbit" : err;
+      state = State::ERROR;
+    }
     requestUpdate();
     return;
   }
 
-  rebuildRowItems();
-  state = State::BROWSING;
-  nav.selected = 0;
+  {
+    RenderLock lock(*this);
+    books.clear();
+    rebuildRowItems();
+    state = State::BROWSING;
+    nav.reset();
+  }
+  requestUpdate();
+}
+
+void BookOrbitActivity::loadShelf(const ShelfView view, const int page) {
+  currentView = view;
+  currentPage = page;
+
+  switch (view) {
+    case ShelfView::ROOT_MENU:
+      loadRootMenu();
+      return;
+    case ShelfView::CURRENTLY_READING:
+      headerTitleStr = "Continue Reading";
+      break;
+    case ShelfView::WANT_TO_READ:
+      headerTitleStr = "Want to Read";
+      break;
+    case ShelfView::RECENTLY_ADDED:
+      headerTitleStr = "Recently Added";
+      break;
+    case ShelfView::ALL_BOOKS:
+      headerTitleStr = "All Books";
+      break;
+    case ShelfView::LIBRARY_BOOKS:
+      headerTitleStr = activeLibraryName.empty() ? "Library" : activeLibraryName;
+      break;
+    case ShelfView::SEARCH_RESULTS:
+      headerTitleStr = "\"" + activeSearchQuery + "\"";
+      break;
+  }
+
+  {
+    RenderLock lock(*this);
+    state = State::LOADING;
+    statusMessage = "Fetching books...";
+  }
+  requestUpdate(true);
+
+  std::string shelfQuery;
+  switch (view) {
+    case ShelfView::CURRENTLY_READING:
+      shelfQuery = "continue-reading";
+      break;
+    case ShelfView::WANT_TO_READ:
+      shelfQuery = "want-to-read";
+      break;
+    case ShelfView::RECENTLY_ADDED:
+      shelfQuery = "recently-added";
+      break;
+    case ShelfView::ALL_BOOKS:
+      shelfQuery = "";
+      break;
+    case ShelfView::LIBRARY_BOOKS:
+      shelfQuery = "library:" + std::to_string(activeLibraryId);
+      break;
+    case ShelfView::SEARCH_RESULTS:
+      shelfQuery = "search:" + activeSearchQuery;
+      break;
+    case ShelfView::ROOT_MENU:
+      break;
+  }
+
+  std::string err;
+  std::vector<BookOrbitBook> fetchedBooks;
+  int fetchedTotal = 0;
+  const bool ok = BookOrbitClient::fetchBooks(shelfQuery, fetchedBooks, err, page, PAGE_SIZE, &fetchedTotal);
+
+  if (!ok) {
+    {
+      RenderLock lock(*this);
+      errorMessage = err.empty() ? "Failed to fetch books from BookOrbit" : err;
+      state = State::ERROR;
+    }
+    requestUpdate();
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    books = std::move(fetchedBooks);
+    totalBooks = fetchedTotal;
+    rebuildRowItems();
+    state = State::BROWSING;
+    nav.reset();
+  }
   requestUpdate();
 }
 
@@ -100,10 +186,63 @@ void BookOrbitActivity::rebuildRowItems() {
   rowItems.clear();
   rowLabels.clear();
   rowValues.clear();
+  hasPrevPageRow = false;
+  hasNextPageRow = false;
 
-  rowItems.reserve(books.size());
-  rowLabels.reserve(books.size());
-  rowValues.reserve(books.size());
+  if (currentView == ShelfView::ROOT_MENU) {
+    const size_t totalRows = 4 + libraries.size();
+    rowItems.reserve(totalRows);
+    rowLabels.reserve(totalRows);
+    rowValues.reserve(totalRows);
+
+    auto addMenuRow = [&](std::string label, std::string val) {
+      const int16_t idx = static_cast<int16_t>(rowItems.size());
+      rowLabels.push_back(std::move(label));
+      rowValues.push_back(std::move(val));
+      fui::ListItem item{};
+      item.label = rowLabels.back().c_str();
+      item.value = rowValues.back().empty() ? nullptr : rowValues.back().c_str();
+      item.actionValue = idx;
+      rowItems.push_back(item);
+    };
+
+    addMenuRow("Continue Reading", "Shelf >");
+    addMenuRow("Recently Added", "Shelf >");
+    addMenuRow("Want to Read", "Shelf >");
+    addMenuRow("All Books", "Catalog >");
+
+    for (const auto& lib : libraries) {
+      std::string countStr = std::to_string(lib.bookCount) + " >";
+      addMenuRow("Library: " + lib.name, std::move(countStr));
+    }
+    return;
+  }
+
+  const bool isPaginated = (currentView == ShelfView::ALL_BOOKS || currentView == ShelfView::LIBRARY_BOOKS ||
+                            currentView == ShelfView::SEARCH_RESULTS);
+  hasPrevPageRow = isPaginated && currentPage > 0;
+  hasNextPageRow = isPaginated && ((currentPage + 1) * PAGE_SIZE < totalBooks);
+
+  const size_t totalRows = books.size() + (hasPrevPageRow ? 1 : 0) + (hasNextPageRow ? 1 : 0);
+  rowItems.reserve(totalRows);
+  rowLabels.reserve(totalRows);
+  rowValues.reserve(totalRows);
+
+  auto addRow = [&](std::string label, std::string val) {
+    const int16_t idx = static_cast<int16_t>(rowItems.size());
+    rowLabels.push_back(std::move(label));
+    rowValues.push_back(std::move(val));
+    fui::ListItem item{};
+    item.label = rowLabels.back().c_str();
+    item.value = rowValues.back().empty() ? nullptr : rowValues.back().c_str();
+    item.actionValue = idx;
+    rowItems.push_back(item);
+  };
+
+  if (hasPrevPageRow) {
+    const int totalPages = (totalBooks + PAGE_SIZE - 1) / PAGE_SIZE;
+    addRow("<< Previous Page", "Page " + std::to_string(currentPage) + "/" + std::to_string(totalPages));
+  }
 
   for (size_t i = 0; i < books.size(); i++) {
     const auto& book = books[i];
@@ -112,7 +251,6 @@ void BookOrbitActivity::rebuildRowItems() {
     if (!book.author.empty()) {
       label += " - " + book.author;
     }
-    rowLabels.push_back(std::move(label));
 
     std::string val;
     if (book.isDownloaded) {
@@ -125,19 +263,18 @@ void BookOrbitActivity::rebuildRowItems() {
     } else if (!book.isDownloaded) {
       val = "Cloud";
     }
-    rowValues.push_back(std::move(val));
+    addRow(std::move(label), std::move(val));
+  }
 
-    fui::ListItem item{};
-    item.label = rowLabels.back().c_str();
-    item.value = rowValues.back().c_str();
-    item.actionValue = static_cast<int16_t>(i);
-    rowItems.push_back(item);
+  if (hasNextPageRow) {
+    const int totalPages = (totalBooks + PAGE_SIZE - 1) / PAGE_SIZE;
+    addRow("Next Page >>", "Page " + std::to_string(currentPage + 2) + "/" + std::to_string(totalPages));
   }
 }
 
 void BookOrbitActivity::buildBrowsingScreen(UiScreen& screen) {
-  if (books.empty()) {
-    screen.centeredText("No books found in this shelf", screen.theme().bodyText);
+  if (rowItems.empty()) {
+    screen.centeredText("No EPUB books found in this shelf", screen.theme().bodyText);
     return;
   }
 
@@ -160,8 +297,40 @@ void BookOrbitActivity::buildScreen(UiScreen& screen) {
 void BookOrbitActivity::activateIndex(int index) {
   if (state != State::BROWSING) return;
   app.clearTapFlash();
-  if (index >= 0 && index < static_cast<int>(books.size())) {
-    handleBookSelected(static_cast<size_t>(index));
+  if (index < 0 || index >= static_cast<int>(rowItems.size())) return;
+
+  if (currentView == ShelfView::ROOT_MENU) {
+    if (index == 0) {
+      loadShelf(ShelfView::CURRENTLY_READING, 0);
+    } else if (index == 1) {
+      loadShelf(ShelfView::RECENTLY_ADDED, 0);
+    } else if (index == 2) {
+      loadShelf(ShelfView::WANT_TO_READ, 0);
+    } else if (index == 3) {
+      loadShelf(ShelfView::ALL_BOOKS, 0);
+    } else {
+      const size_t libIdx = static_cast<size_t>(index - 4);
+      if (libIdx < libraries.size()) {
+        activeLibraryId = libraries[libIdx].id;
+        activeLibraryName = libraries[libIdx].name;
+        loadShelf(ShelfView::LIBRARY_BOOKS, 0);
+      }
+    }
+    return;
+  }
+
+  if (hasPrevPageRow && index == 0) {
+    loadShelf(currentView, currentPage - 1);
+    return;
+  }
+  if (hasNextPageRow && index == static_cast<int>(rowItems.size()) - 1) {
+    loadShelf(currentView, currentPage + 1);
+    return;
+  }
+
+  const int bookIdx = index - (hasPrevPageRow ? 1 : 0);
+  if (bookIdx >= 0 && bookIdx < static_cast<int>(books.size())) {
+    handleBookSelected(static_cast<size_t>(bookIdx));
   }
 }
 
@@ -187,6 +356,13 @@ void BookOrbitActivity::handleBookSelected(size_t index) {
         auto& b = books[index];
         beginDownload(b.title);
 
+        std::string token;
+        std::string authErr;
+        if (!BookOrbitClient::ensureAuthenticated(token, authErr)) {
+          finishDownload(HttpDownloader::UNAUTHORIZED);
+          return;
+        }
+
         const std::string folder = BookOrbitClient::getDownloadDir();
         if (!Storage.exists(folder.c_str())) {
           Storage.mkdir(folder.c_str());
@@ -207,7 +383,7 @@ void BookOrbitActivity::handleBookSelected(size_t index) {
         const std::string url = baseUrl + downloadEndpoint;
 
         std::vector<HttpDownloader::Header> headers;
-        headers.emplace_back("Authorization", "Bearer " + BOOKORBIT_STORE.getApiKey());
+        headers.emplace_back("Authorization", "Bearer " + token);
 
         const auto dlResult = downloadFile(url, filename, "", "", headers);
 
@@ -219,6 +395,8 @@ void BookOrbitActivity::handleBookSelected(size_t index) {
           metaDoc["bookorbit"]["bookId"] = b.id;
           metaDoc["bookorbit"]["fileId"] = b.fileId;
           metaDoc["bookorbit"]["serverUrl"] = BOOKORBIT_STORE.getServerUrl();
+          metaDoc["progress"] = b.progress;
+          metaDoc["pendingSync"] = false;
 
           HalFile metaFile;
           if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
@@ -256,9 +434,12 @@ void BookOrbitActivity::downloadFinished(const bool cancelled) {
 void BookOrbitActivity::drawFooter() {
   MappedInputManager::Labels labels;
   switch (state) {
-    case State::BROWSING:
-      labels = mappedInput.mapLabels("Back", "Open/Download", "Search", "Down");
+    case State::BROWSING: {
+      const char* confirmLabel = (currentView == ShelfView::ROOT_MENU) ? "Open" : "Open/Download";
+      const char* upLabel = (hasSearch() && nav.selected == 0) ? "Search" : "Up";
+      labels = mappedInput.mapLabels("Back", confirmLabel, upLabel, "Down");
       break;
+    }
     case State::DOWNLOADING:
       labels = mappedInput.mapLabels("Cancel", "", "", "");
       break;

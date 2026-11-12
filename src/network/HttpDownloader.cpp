@@ -189,7 +189,7 @@ bool HttpDownloader::postForm(const std::string& url, const std::string& formBod
 }
 
 bool HttpDownloader::postJson(const std::string& url, const std::string& jsonBody, std::string& outResponse,
-                              const std::string& bearer, int* statusOut) {
+                              const std::string& bearer, int* statusOut, const size_t maxResponseBytes) {
   WifiPowerSaveGuard psGuard;
   outResponse.clear();
   freeink::SecureHttpClient http;
@@ -205,6 +205,33 @@ bool HttpDownloader::postJson(const std::string& url, const std::string& jsonBod
   }
   LOG_DBG("HTTP", "wolfSSL POST JSON: %s", url.c_str());
   const int status = http.sendRequest("POST", reinterpret_cast<const uint8_t*>(jsonBody.data()), jsonBody.size(),
+                                      [&outResponse, maxResponseBytes](const uint8_t* data, size_t len) {
+                                        const size_t room =
+                                            maxResponseBytes - std::min(outResponse.size(), maxResponseBytes);
+                                        outResponse.append(reinterpret_cast<const char*>(data), std::min(len, room));
+                                        return true;
+                                      });
+  if (statusOut) *statusOut = status > 0 ? status : 0;
+  return status >= 200 && status < 300;
+}
+
+bool HttpDownloader::putJson(const std::string& url, const std::string& jsonBody, std::string& outResponse,
+                             const std::string& bearer, int* statusOut) {
+  WifiPowerSaveGuard psGuard;
+  outResponse.clear();
+  freeink::SecureHttpClient http;
+  if (!http.begin(url)) {
+    LOG_ERR("HTTP", "bad URL: %s", url.c_str());
+    if (statusOut) *statusOut = 0;
+    return false;
+  }
+  applyCommonClientSetup(http);
+  http.addHeader("Content-Type", "application/json");
+  if (!bearer.empty()) {
+    http.addHeader("Authorization", "Bearer " + bearer);
+  }
+  LOG_DBG("HTTP", "wolfSSL PUT JSON: %s", url.c_str());
+  const int status = http.sendRequest("PUT", reinterpret_cast<const uint8_t*>(jsonBody.data()), jsonBody.size(),
                                       [&outResponse](const uint8_t* data, size_t len) {
                                         const size_t room =
                                             MAX_RESPONSE_BYTES - std::min(outResponse.size(), MAX_RESPONSE_BYTES);

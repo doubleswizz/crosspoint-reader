@@ -13,7 +13,7 @@ class BookOrbitSettingsActivity final : public UiListActivity {
  public:
   explicit BookOrbitSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
 
-  static constexpr int MENU_ITEMS = 6;
+  static constexpr int MENU_ITEMS = 7;
 
   void render(RenderLock&&) override;
 
