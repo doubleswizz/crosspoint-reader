@@ -11,9 +11,11 @@
 #include <LibraryIndexFile.h>
 #include <Memory.h>
 #include <Utf8.h>
+#include <WiFi.h>
 #include <Xtc.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -24,8 +26,12 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
+#include "WifiCredentialStore.h"
+#include "activities/ActivityManager.h"
+#include "activities/RenderLock.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/BookOrbitClient.h"
 
 int HomeActivity::getMenuItemCount() const {
   int count = recentBooks.empty() ? 0 : static_cast<int>(recentBooks.size());
@@ -636,6 +642,52 @@ void HomeActivity::onBookOrbitSearchOpen() { activityManager.goToBookOrbitSearch
 
 void HomeActivity::onBookOrbitLibrariesOpen() { activityManager.goToBookOrbitLibraries(); }
 
-void HomeActivity::onBookOrbitSyncOpen() { activityManager.goToBookOrbitSync(); }
+void HomeActivity::onBookOrbitSyncOpen() {
+  if (!BOOKORBIT_STORE.isConfigured()) {
+    {
+      RenderLock lock(*this);
+      GUI.drawPopup(renderer, "BookOrbit is not configured");
+    }
+    delay(1400);
+    requestUpdate();
+    return;
+  }
+
+  WIFI_STORE.loadFromFile();
+  if (WiFi.status() != WL_CONNECTED && !WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid())) {
+    activityManager.goToBookOrbitSync();
+    return;
+  }
+
+  {
+    RenderLock lock(*this);
+    GUI.drawPopup(renderer, "Syncing with BookOrbit...");
+  }
+
+  const bool connected = BookOrbitClient::connectWifiBriefly(8000);
+  int pushed = 0, pulled = 0;
+  const bool ok = connected && BookOrbitClient::syncAllProgress(&pushed, &pulled);
+  BookOrbitClient::wifiOff();
+
+  char resultMsg[64];
+  if (!connected) {
+    snprintf(resultMsg, sizeof(resultMsg), "Wi-Fi connection failed");
+  } else if (!ok) {
+    snprintf(resultMsg, sizeof(resultMsg), "BookOrbit sync failed");
+  } else if (pushed == 0 && pulled == 0) {
+    snprintf(resultMsg, sizeof(resultMsg), "All books up to date");
+  } else {
+    snprintf(resultMsg, sizeof(resultMsg), "Synced: %d pushed, %d updated", pushed, pulled);
+  }
+
+  // Repaint Home cleanly under the result popup, then clear the popup after a brief pause.
+  requestUpdateAndWait();
+  {
+    RenderLock lock(*this);
+    GUI.drawPopup(renderer, resultMsg);
+  }
+  delay(1400);
+  requestUpdate();
+}
 
 void HomeActivity::onMoreOpen() { activityManager.goToMore(); }

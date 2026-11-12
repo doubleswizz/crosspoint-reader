@@ -38,6 +38,20 @@ constexpr int mainMenuIconSize = 32;
 constexpr int mainMenuColumns = 2;
 int coverWidth = 0;
 
+bool isUprightIcon(UIIcon icon) { return icon == UIIcon::Search || icon == UIIcon::Sync; }
+
+void drawUprightIcon(const GfxRenderer& renderer, const uint8_t bitmap[], const int x, const int y, const int size) {
+  const int rowBytes = (size + 7) / 8;
+  for (int row = 0; row < size; row++) {
+    for (int col = 0; col < size; col++) {
+      const uint8_t byte = bitmap[row * rowBytes + (col >> 3)];
+      if (((byte >> (7 - (col & 7))) & 1) == 0) {
+        renderer.drawPixel(x + col, y + row, true);
+      }
+    }
+  }
+}
+
 const uint8_t* iconForName(UIIcon icon) {
   switch (icon) {
     case UIIcon::Folder:
@@ -329,19 +343,26 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     if (selected) {
       renderer.fillRoundedRect(tileRect.x, tileRect.y, tileRect.width, tileRect.height, cornerRadius, Color::LightGray);
     }
+    renderer.drawRoundedRect(tileRect.x, tileRect.y, tileRect.width, tileRect.height, selected ? 2 : 1, cornerRadius,
+                             true);
 
     std::string labelStr = buttonLabel(i);
     const char* label = labelStr.c_str();
     int textX = tileRect.x + 16;
     const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
     const int textY = tileRect.y + (LyraMetrics::values.menuRowHeight - lineHeight) / 2;
+    const int iconY = tileRect.y + (LyraMetrics::values.menuRowHeight - mainMenuIconSize) / 2;
 
     if (rowIcon != nullptr) {
       UIIcon icon = rowIcon(i);
       const uint8_t* iconBitmap = iconForName(icon);
       if (iconBitmap != nullptr) {
-        renderer.drawIcon(iconBitmap, textX, textY, mainMenuIconSize);
-        textX += mainMenuIconSize + hPaddingInSelection + 2;
+        if (isUprightIcon(icon)) {
+          drawUprightIcon(renderer, iconBitmap, textX, iconY, mainMenuIconSize);
+        } else {
+          renderer.drawIcon(iconBitmap, textX, iconY, mainMenuIconSize);
+        }
+        textX += mainMenuIconSize + hPaddingInSelection + 4;
       }
     }
 

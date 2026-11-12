@@ -1028,7 +1028,7 @@ bool BookOrbitClient::loadLocalBooks(std::vector<BookOrbitBook>& outBooks) {
 }
 
 bool BookOrbitClient::connectWifiBriefly(const unsigned long timeoutMs) {
-  if (WiFi.status() == WL_CONNECTED) return true;
+  if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) return true;
   WIFI_STORE.loadFromFile();
   const auto cred = WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid());
   if (!cred) {
@@ -1038,10 +1038,10 @@ bool BookOrbitClient::connectWifiBriefly(const unsigned long timeoutMs) {
   WiFi.mode(WIFI_STA);
   WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
   const unsigned long deadline = millis() + timeoutMs;
-  while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+  while ((WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) && millis() < deadline) {
     delay(100);
   }
-  return WiFi.status() == WL_CONNECTED;
+  return WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
 }
 
 void BookOrbitClient::wifiOff() {

@@ -14,6 +14,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "SilentRestart.h"
+#include "WifiCredentialStore.h"
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
@@ -208,6 +209,20 @@ void BookOrbitActivity::ensureWifi(std::function<void()> onConnected, std::funct
   if (wifiConnected()) {
     if (onConnected) onConnected();
     return;
+  }
+
+  WIFI_STORE.loadFromFile();
+  if (WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid())) {
+    {
+      RenderLock lock(*this);
+      state = State::LOADING;
+      statusMessage = "Connecting to Wi-Fi...";
+    }
+    requestUpdate(true);
+    if (BookOrbitClient::connectWifiBriefly(8000) && wifiConnected()) {
+      if (onConnected) onConnected();
+      return;
+    }
   }
 
   auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
