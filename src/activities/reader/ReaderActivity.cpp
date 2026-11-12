@@ -1,5 +1,6 @@
 #include "ReaderActivity.h"
 
+#include <BlePageTurner.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
 #include <HalStorage.h>
@@ -54,10 +55,37 @@ void ReaderActivity::disableFastInitialRefresh() { pagesUntilFullRefresh = 0; }
 void ReaderActivity::notePageTurn(const bool forward, const bool succeeded) {
   RenderLock lock(*this);
   readerSession.noteTurn(forward, succeeded);
+  lastPageTurnMs = millis();
+}
+
+void ReaderActivity::maybePeriodicBookOrbitSync() {
+  constexpr unsigned long IDLE_BEFORE_SYNC_MS = 30UL * 1000;  // never sync in the middle of active reading
+  constexpr unsigned long RETRY_BACKOFF_MS = 2UL * 60 * 1000;
+  const uint8_t minutes = BOOKORBIT_STORE.getPeriodicSyncMinutes();
+  if (minutes == 0 || !BOOKORBIT_STORE.isConfigured() || !pageRendered.load(std::memory_order_acquire)) return;
+
+  const unsigned long now = millis();
+  const unsigned long interval = static_cast<unsigned long>(minutes) * 60UL * 1000UL;
+  if (now - lastPeriodicSyncMs < interval) return;
+  if (now - lastPageTurnMs < IDLE_BEFORE_SYNC_MS) return;
+
+  // A menu/toolbar is open, or the Bluetooth page-turner radio holds the heap: try again shortly.
+  if (inputOverPage() || bleturner::holdsHeap()) {
+    lastPeriodicSyncMs = now - interval + RETRY_BACKOFF_MS;
+    return;
+  }
+
+  const float ratio = static_cast<float>(getProgressBasisPoints()) / 10000.0f;
+  const bool ok = BookOrbitClient::pushProgressBurst(bookPath, ratio);
+  const unsigned long done = millis();
+  // Success (or a config/connection failure) waits a full interval; a heap/battery skip retries sooner.
+  lastPeriodicSyncMs = ok ? done : (done - interval + RETRY_BACKOFF_MS);
+  lastPageTurnMs = done;  // the burst blocked input briefly; restart the idle window
 }
 
 void ReaderActivity::onEnter() {
   Activity::onEnter();
+  lastPageTurnMs = lastPeriodicSyncMs = millis();
 
   // Heap ledger for field crash reports: free vs largest block distinguishes a
   // leak (free falls) from fragmentation (free stable, largest collapses).

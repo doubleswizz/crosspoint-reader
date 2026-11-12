@@ -2,13 +2,16 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 
 #include <cstdlib>
 
 #include "CrossPointSettings.h"
+#include "WifiCredentialStore.h"
 #include "util/BookProgress.h"
 #include "util/OpdsFilename.h"
 
@@ -589,7 +592,7 @@ bool BookOrbitClient::getBookMetadata(const std::string& bookPath, std::string& 
   return true;
 }
 
-void BookOrbitClient::recordBookProgress(const std::string& bookPath, float progressRatio) {
+void BookOrbitClient::recordBookProgress(const std::string& bookPath, float progressRatio, const bool forcePush) {
   if (!BOOKORBIT_STORE.isEnabled()) return;
   const std::string metaPath = bookPath + ".meta.json";
   if (!Storage.exists(metaPath.c_str())) return;
@@ -609,7 +612,7 @@ void BookOrbitClient::recordBookProgress(const std::string& bookPath, float prog
   doc["progress"] = progressRatio;
 
   bool synced = false;
-  if (BOOKORBIT_STORE.getSyncOnClose() && WiFi.status() == WL_CONNECTED) {
+  if ((forcePush || BOOKORBIT_STORE.getSyncOnClose()) && WiFi.status() == WL_CONNECTED) {
     synced = syncReadingProgress(fileId, progressRatio);
   }
 
@@ -1014,4 +1017,55 @@ bool BookOrbitClient::loadLocalBooks(std::vector<BookOrbitBook>& outBooks) {
   });
 
   return !outBooks.empty();
+}
+
+bool BookOrbitClient::connectWifiBriefly(const unsigned long timeoutMs) {
+  if (WiFi.status() == WL_CONNECTED) return true;
+  WIFI_STORE.loadFromFile();
+  const auto cred = WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid());
+  if (!cred) {
+    LOG_DBG("BKO", "No saved Wi-Fi network; skipping background connect");
+    return false;
+  }
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(cred->ssid.c_str(), cred->password.c_str());
+  const unsigned long deadline = millis() + timeoutMs;
+  while (WiFi.status() != WL_CONNECTED && millis() < deadline) {
+    delay(100);
+  }
+  return WiFi.status() == WL_CONNECTED;
+}
+
+void BookOrbitClient::wifiOff() {
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+}
+
+bool BookOrbitClient::pushProgressBurst(const std::string& bookPath, const float progressRatio) {
+  if (!BOOKORBIT_STORE.isConfigured()) return false;
+
+  // Wi-Fi + TLS need internal RAM (not PSRAM) in one piece; the reader itself runs with thin margins.
+  constexpr size_t MIN_INTERNAL_FREE = 100 * 1024;
+  constexpr size_t MIN_INTERNAL_BLOCK = 50 * 1024;
+  const size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const size_t blockInternal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+  LOG_INF("BKO", "periodic sync check: internal free=%u block=%u", (unsigned)freeInternal, (unsigned)blockInternal);
+  if (freeInternal < MIN_INTERNAL_FREE || blockInternal < MIN_INTERNAL_BLOCK) {
+    LOG_INF("BKO", "periodic sync skipped: not enough internal heap");
+    return false;
+  }
+  if (powerManager.getBatteryPercentage() < 25) return false;
+
+  const bool radioWasUp = (WiFi.status() == WL_CONNECTED);
+  const bool connected = connectWifiBriefly(8000);
+  if (connected) {
+    recordBookProgress(bookPath, progressRatio, /*forcePush=*/true);
+  }
+  if (!radioWasUp) wifiOff();
+  LOG_INF("BKO", "periodic sync %s; internal free=%u block=%u", connected ? "done" : "failed (no Wi-Fi)",
+          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  return connected;
 }

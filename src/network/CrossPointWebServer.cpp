@@ -1932,6 +1932,7 @@ void CrossPointWebServer::handleGetBookOrbit() const {
   doc["username"] = BOOKORBIT_STORE.getUsername();
   doc["syncOnOpen"] = BOOKORBIT_STORE.getSyncOnOpen();
   doc["syncOnClose"] = BOOKORBIT_STORE.getSyncOnClose();
+  doc["periodicSyncMinutes"] = BOOKORBIT_STORE.getPeriodicSyncMinutes();
 
   std::string output;
   serializeJson(doc, output);
@@ -1968,6 +1969,10 @@ void CrossPointWebServer::handlePostBookOrbit() {
   }
   if (doc["syncOnClose"].is<bool>()) {
     BOOKORBIT_STORE.setSyncOnClose(doc["syncOnClose"].as<bool>());
+  }
+  if (doc["periodicSyncMinutes"].is<int>()) {
+    const int m = doc["periodicSyncMinutes"].as<int>();
+    BOOKORBIT_STORE.setPeriodicSyncMinutes(static_cast<uint8_t>(m < 0 ? 0 : (m > 240 ? 240 : m)));
   }
 
   BOOKORBIT_STORE.saveToFile();

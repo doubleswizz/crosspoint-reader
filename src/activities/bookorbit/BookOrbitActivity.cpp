@@ -42,6 +42,11 @@ void BookOrbitActivity::onEnter() {
   CatalogActivity::onEnter();
   app.on(ACTION_PAGE, &BookOrbitActivity::onPageEvent, this);
   loadRootMenu();
+  // Sync on open: join Wi-Fi, pull progress from other devices, push anything pending. Backing out of the
+  // Wi-Fi screen (or no network) simply leaves the offline home screen, so reading local books still works.
+  if (BOOKORBIT_STORE.isConfigured() && BOOKORBIT_STORE.getSyncOnOpen()) {
+    ensureWifi([this] { startProgressSync(); });
+  }
 }
 
 void BookOrbitActivity::onExit() { CatalogActivity::onExit(); }

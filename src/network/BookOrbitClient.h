@@ -75,7 +75,16 @@ class BookOrbitClient {
                               float* outProgress = nullptr);
 
   // Records current book progress to sidecar and attempts to sync if online
-  static void recordBookProgress(const std::string& bookPath, float progressRatio);
+  // forcePush pushes even when "sync on close" is off (used by the periodic in-reader sync).
+  static void recordBookProgress(const std::string& bookPath, float progressRatio, bool forcePush = false);
+
+  // Brings Wi-Fi up with the last-used saved network. Returns true once connected (or already connected).
+  static bool connectWifiBriefly(unsigned long timeoutMs);
+  // Fully powers the Wi-Fi radio down (no-op if it is already off).
+  static void wifiOff();
+  // Duty-cycled push for the book being read: join Wi-Fi, push progress, radio off. Skips (returns false)
+  // when heap, battery or configuration make that unsafe. Never leaves the radio on.
+  static bool pushProgressBurst(const std::string& bookPath, float progressRatio);
 
   // Updates local sidecar metadata with server progress if newer
   static void updateLocalSidecarProgress(const std::string& bookPath, float serverRatio);

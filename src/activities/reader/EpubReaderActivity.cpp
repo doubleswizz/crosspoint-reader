@@ -708,6 +708,7 @@ void EpubReaderActivity::loop() {
   }
 
   rememberBookOnceRendered();
+  maybePeriodicBookOrbitSync();
 
   // The radio stopped for a chapter build: once the render task has let go of the lock, that page
   // is on screen; once the build tick below has finished the chapter, no parser is left alive and

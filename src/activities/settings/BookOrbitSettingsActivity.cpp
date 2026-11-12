@@ -20,11 +20,13 @@ constexpr int IDX_USERNAME = 2;
 constexpr int IDX_API_KEY = 3;
 constexpr int IDX_SYNC_ON_OPEN = 4;
 constexpr int IDX_SYNC_ON_CLOSE = 5;
-constexpr int IDX_TEST_CONNECTION = 6;
+constexpr int IDX_PERIODIC_SYNC = 6;
+constexpr int IDX_TEST_CONNECTION = 7;
+constexpr uint8_t PERIODIC_CHOICES[] = {0, 10, 15, 30};
 
 const char* menuLabels[BookOrbitSettingsActivity::MENU_ITEMS] = {
-    "Enable BookOrbit",  "Server URL",         "Username",       "Password / API Key",
-    "Sync On Book Open", "Sync On Book Close", "Test Connection"};
+    "Enable BookOrbit",  "Server URL",         "Username",           "Password / API Key",
+    "Sync On Book Open", "Sync On Book Close", "Sync While Reading", "Test Connection"};
 }  // namespace
 
 BookOrbitSettingsActivity::BookOrbitSettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -96,6 +98,16 @@ void BookOrbitSettingsActivity::activateIndex(const int index) {
     BOOKORBIT_STORE.setSyncOnClose(!BOOKORBIT_STORE.getSyncOnClose());
     BOOKORBIT_STORE.saveToFile();
     requestUpdate();
+  } else if (index == IDX_PERIODIC_SYNC) {
+    // Cycle Off -> 10 -> 15 -> 30 min.
+    const uint8_t cur = BOOKORBIT_STORE.getPeriodicSyncMinutes();
+    size_t next = 0;
+    for (size_t i = 0; i < sizeof(PERIODIC_CHOICES); i++) {
+      if (PERIODIC_CHOICES[i] == cur) next = (i + 1) % sizeof(PERIODIC_CHOICES);
+    }
+    BOOKORBIT_STORE.setPeriodicSyncMinutes(PERIODIC_CHOICES[next]);
+    BOOKORBIT_STORE.saveToFile();
+    requestUpdate();
   } else if (index == IDX_TEST_CONNECTION) {
     if (!BOOKORBIT_STORE.isConfigured()) return;
     auto runTest = [this]() {
@@ -129,6 +141,10 @@ void BookOrbitSettingsActivity::buildScreen(UiScreen& screen) {
   rowValues_[IDX_API_KEY] = BOOKORBIT_STORE.getApiKey().empty() ? "[Not Set]" : "********";
   rowValues_[IDX_SYNC_ON_OPEN] = BOOKORBIT_STORE.getSyncOnOpen() ? "Yes" : "No";
   rowValues_[IDX_SYNC_ON_CLOSE] = BOOKORBIT_STORE.getSyncOnClose() ? "Yes" : "No";
+  {
+    const uint8_t m = BOOKORBIT_STORE.getPeriodicSyncMinutes();
+    rowValues_[IDX_PERIODIC_SYNC] = m == 0 ? "Off" : ("Every " + std::to_string(m) + " min");
+  }
   rowValues_[IDX_TEST_CONNECTION] = BOOKORBIT_STORE.isConfigured() ? "Test Now" : "[Configure first]";
 
   for (int i = 0; i < MENU_ITEMS; i++) {

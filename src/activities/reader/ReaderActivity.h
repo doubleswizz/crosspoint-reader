@@ -70,6 +70,10 @@ class ReaderActivity : public Activity {
   void disableFastInitialRefresh();
   void notePageTurn(bool forward, bool succeeded);
   void flushReaderSession();
+  // Periodic BookOrbit progress push while reading (Settings > BookOrbit > Sync While Reading).
+  void maybePeriodicBookOrbitSync();
+  unsigned long lastPageTurnMs = 0;
+  unsigned long lastPeriodicSyncMs = 0;
 
  public:
   ~ReaderActivity() override = default;

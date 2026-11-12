@@ -10,6 +10,7 @@ void BookOrbitStore::toJson(JsonDocument& doc) const {
   doc["apiKey_obf"] = obfuscation::obfuscateToBase64(config.apiKey);
   doc["syncOnOpen"] = config.syncOnOpen;
   doc["syncOnClose"] = config.syncOnClose;
+  doc["periodicSyncMinutes"] = config.periodicSyncMinutes;
 }
 
 bool BookOrbitStore::fromJson(JsonVariantConst doc) {
@@ -18,6 +19,7 @@ bool BookOrbitStore::fromJson(JsonVariantConst doc) {
   config.username = doc["username"] | "";
   config.syncOnOpen = doc["syncOnOpen"] | true;
   config.syncOnClose = doc["syncOnClose"] | true;
+  config.periodicSyncMinutes = doc["periodicSyncMinutes"] | 0;
 
   if (doc["apiKey_obf"].is<const char*>()) {
     config.apiKey = obfuscation::deobfuscateFromBase64(doc["apiKey_obf"].as<const char*>());
@@ -64,5 +66,10 @@ void BookOrbitStore::setSyncOnOpen(bool val) {
 
 void BookOrbitStore::setSyncOnClose(bool val) {
   config.syncOnClose = val;
+  requestResave();
+}
+
+void BookOrbitStore::setPeriodicSyncMinutes(uint8_t minutes) {
+  config.periodicSyncMinutes = minutes;
   requestResave();
 }

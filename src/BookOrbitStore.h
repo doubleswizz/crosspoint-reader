@@ -11,6 +11,8 @@ struct BookOrbitConfig {
   std::string username;
   bool syncOnOpen = true;
   bool syncOnClose = true;
+  // Background progress push while reading: 0 = off, otherwise minutes between pushes.
+  uint8_t periodicSyncMinutes = 0;
 
   bool isConfigured() const { return enabled && !serverUrl.empty() && !apiKey.empty(); }
 };
@@ -43,6 +45,8 @@ class BookOrbitStore : public PersistableStore<BookOrbitStore> {
   void setSyncOnOpen(bool val);
   bool getSyncOnClose() const { return config.syncOnClose; }
   void setSyncOnClose(bool val);
+  uint8_t getPeriodicSyncMinutes() const { return config.periodicSyncMinutes; }
+  void setPeriodicSyncMinutes(uint8_t minutes);
 };
 
 #define BOOKORBIT_STORE BookOrbitStore::getInstance()

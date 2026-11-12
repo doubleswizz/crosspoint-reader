@@ -46,6 +46,7 @@
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "network/BookOrbitClient.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/PluginEvents.h"
@@ -402,6 +403,21 @@ static void deliverSleepPluginEvents(const bool allowNetwork) {
   }
 }
 
+// Pre-sleep BookOrbit push. prepareForSleep() (run by deliverSleepPluginEvents) has just written the final
+// reading position and flagged it pendingSync; join Wi-Fi briefly, push every pending book, and let the
+// caller's WiFi teardown shut the radio. Bounded join, skipped on low battery, never blocks sleep for long.
+static void bookOrbitSleepSync(const bool allowNetwork) {
+  if (!allowNetwork || !APP_STATE.lastSleepFromReader) return;
+  if (!BOOKORBIT_STORE.isConfigured() || !BOOKORBIT_STORE.getSyncOnClose()) return;
+  if (powerManager.getBatteryPercentage() < 20) return;
+  GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
+  if (BookOrbitClient::connectWifiBriefly(8000)) {
+    BookOrbitClient::syncPendingProgress();
+  } else {
+    LOG_DBG("MAIN", "BookOrbit sleep sync: no Wi-Fi; progress stays pending");
+  }
+}
+
 #if FREEINK_DEVICE_PICCO
 // Charge strip along the bottom of the retained sleep screen.
 static void drawSleepChargeStrip(const bool charging, const uint16_t percent) {
@@ -452,6 +468,7 @@ void enterDeepSleep(bool fromTimeout = false) {
   const bool bluetoothStopped = bleturner::beforeSleep(2000);
   if (!bluetoothStopped) LOG_ERR("SLP", "Bluetooth did not stop; deferring sleep-event delivery");
   deliverSleepPluginEvents(bluetoothStopped);
+  bookOrbitSleepSync(bluetoothStopped);
 
   const bool isQuickResumeSleep =
       SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::QUICK_RESUME ||
