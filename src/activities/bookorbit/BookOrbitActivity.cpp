@@ -5,6 +5,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <WiFi.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -12,14 +13,17 @@
 #include "BookOrbitStore.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "RecentBooksStore.h"
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 #include "components/icons/listIcons.h"
 #include "components/icons/opdsIcons.h"
 #include "components/icons/search32.h"
+#include "util/BookProgress.h"
 #include "util/OpdsFilename.h"
 
 namespace fui = freeink::ui;
@@ -37,9 +41,7 @@ BookOrbitActivity::BookOrbitActivity(GfxRenderer& renderer, MappedInputManager& 
 void BookOrbitActivity::onEnter() {
   CatalogActivity::onEnter();
   app.on(ACTION_PAGE, &BookOrbitActivity::onPageEvent, this);
-  state = State::CHECK_WIFI;
-  statusMessage = tr(STR_CHECKING_WIFI);
-  checkAndConnectWifi();
+  loadRootMenu();
 }
 
 void BookOrbitActivity::onExit() { CatalogActivity::onExit(); }
@@ -48,7 +50,7 @@ const char* BookOrbitActivity::headerTitle() const { return headerTitleStr.c_str
 
 int BookOrbitActivity::listCount() const {
   if (state != State::BROWSING) return 0;
-  if (currentView == ShelfView::ROOT_MENU) return 4;
+  if (currentView == ShelfView::ROOT_MENU) return hasResumeBook() ? 5 : 4;
   return static_cast<int>(rowItems.size());
 }
 
@@ -72,7 +74,15 @@ void BookOrbitActivity::startBrowse() {
   }
 }
 
-void BookOrbitActivity::retryBrowse() { startBrowse(); }
+void BookOrbitActivity::retryBrowse() {
+  if (currentView == ShelfView::ROOT_MENU) {
+    loadRootMenu();
+  } else if (!wifiConnected()) {
+    ensureWifi([this] { startBrowse(); });
+  } else {
+    startBrowse();
+  }
+}
 
 void BookOrbitActivity::onBackButton() {
   if (state == State::BROWSING) {
@@ -142,6 +152,120 @@ void BookOrbitActivity::onPageEvent(const fui::ActionEvent& event, void* user) {
   }
 }
 
+bool BookOrbitActivity::findLastOpenedBook(std::string& outPath, std::string& outTitle, std::string& outAuthor,
+                                           int& outProgress) const {
+  outPath.clear();
+  outTitle.clear();
+  outAuthor.clear();
+  outProgress = -1;
+
+  const std::string bkoDir = BookOrbitClient::getDownloadDir();
+
+  // 1. Look for most recent BookOrbit book in RECENT_BOOKS
+  for (const auto& r : RECENT_BOOKS.getBooks()) {
+    if (r.path.rfind(bkoDir, 0) == 0 && Storage.exists(r.path.c_str())) {
+      outPath = r.path;
+      outTitle = r.title;
+      outAuthor = r.author;
+      break;
+    }
+  }
+
+  // 2. If not found in RECENT_BOOKS, check APP_STATE.openEpubPath if in BookOrbit dir
+  if (outPath.empty() && !APP_STATE.openEpubPath.empty() && APP_STATE.openEpubPath.rfind(bkoDir, 0) == 0 &&
+      Storage.exists(APP_STATE.openEpubPath.c_str())) {
+    outPath = APP_STATE.openEpubPath;
+  }
+
+  // 3. Fallback to any recent book in RECENT_BOOKS that exists on storage
+  if (outPath.empty()) {
+    for (const auto& r : RECENT_BOOKS.getBooks()) {
+      if (Storage.exists(r.path.c_str())) {
+        outPath = r.path;
+        outTitle = r.title;
+        outAuthor = r.author;
+        break;
+      }
+    }
+  }
+
+  // 4. Fallback to APP_STATE.openEpubPath if valid
+  if (outPath.empty() && !APP_STATE.openEpubPath.empty() && Storage.exists(APP_STATE.openEpubPath.c_str())) {
+    outPath = APP_STATE.openEpubPath;
+  }
+
+  if (outPath.empty()) {
+    return false;
+  }
+
+  // Populate title & author from sidecar .meta.json if missing
+  const std::string metaPath = outPath + ".meta.json";
+  std::string metaContent;
+  if (Storage.exists(metaPath.c_str()) && Storage.readFileToString("BKO", metaPath.c_str(), 1024, metaContent)) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, metaContent)) {
+      if (outTitle.empty()) outTitle = doc["title"] | "";
+      if (outAuthor.empty()) outAuthor = doc["author"] | "";
+    }
+  }
+
+  // Fallback title from filename
+  if (outTitle.empty()) {
+    size_t slash = outPath.rfind('/');
+    std::string name = (slash != std::string::npos) ? outPath.substr(slash + 1) : outPath;
+    if (name.length() > 5 && name.rfind(".epub") == name.length() - 5) {
+      name = name.substr(0, name.length() - 5);
+    }
+    size_t dash = name.find(" - ");
+    if (dash != std::string::npos) {
+      if (outAuthor.empty()) outAuthor = name.substr(0, dash);
+      outTitle = name.substr(dash + 3);
+    } else {
+      outTitle = name;
+    }
+  }
+
+  outProgress = loadBookProgress(outPath);
+  return true;
+}
+
+bool BookOrbitActivity::hasResumeBook() const {
+  std::string path, title, author;
+  int prog = -1;
+  return findLastOpenedBook(path, title, author, prog);
+}
+
+void BookOrbitActivity::ensureWifi(std::function<void()> onConnected) {
+  if (wifiConnected()) {
+    if (onConnected) onConnected();
+    return;
+  }
+
+  auto wifi = makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput);
+  if (!wifi) {
+    RenderLock lock(*this);
+    errorMessage = "Out of memory launching Wi-Fi";
+    state = State::ERROR;
+    requestUpdate();
+    return;
+  }
+
+  state = State::WIFI_SELECTION;
+  requestUpdate();
+
+  startActivityForResult(std::move(wifi), [this, callback = std::move(onConnected)](const ActivityResult& result) {
+    if (result.isCancelled || !wifiConnected()) {
+      RenderLock lock(*this);
+      state = State::BROWSING;
+      requestUpdate();
+    } else {
+      if (callback) {
+        callback();
+      }
+    }
+  });
+}
+
 void BookOrbitActivity::performSearch(const std::string& query) {
   if (query.empty()) {
     activeSearchQuery.clear();
@@ -150,7 +274,7 @@ void BookOrbitActivity::performSearch(const std::string& query) {
   }
   activeSearchQuery = query;
   currentView = ShelfView::SEARCH_RESULTS;
-  loadShelf(currentView, 0);
+  ensureWifi([this] { loadShelf(currentView, 0); });
 }
 
 void BookOrbitActivity::loadRootMenu() {
@@ -158,27 +282,6 @@ void BookOrbitActivity::loadRootMenu() {
   currentPage = 0;
   totalBooks = 0;
   headerTitleStr = "BookOrbit";
-
-  if (libraries.empty()) {
-    {
-      RenderLock lock(*this);
-      state = State::LOADING;
-      statusMessage = "Connecting to BookOrbit...";
-    }
-    requestUpdate(true);
-
-    std::string err;
-    BookOrbitClient::syncPendingProgress();
-    if (!BookOrbitClient::fetchLibraries(libraries, err)) {
-      {
-        RenderLock lock(*this);
-        errorMessage = err.empty() ? "Failed to connect to BookOrbit" : err;
-        state = State::ERROR;
-      }
-      requestUpdate();
-      return;
-    }
-  }
 
   {
     RenderLock lock(*this);
@@ -263,6 +366,24 @@ void BookOrbitActivity::loadShelf(const ShelfView view, const int page) {
       break;
   }
 
+  // When offline, browsing "Continue Reading" directly shows locally downloaded/reading books!
+  if (view == ShelfView::CURRENTLY_READING && !wifiConnected()) {
+    std::vector<BookOrbitBook> localBooks;
+    if (BookOrbitClient::loadLocalBooks(localBooks)) {
+      RenderLock lock(*this);
+      books = std::move(localBooks);
+      totalBooks = static_cast<int>(books.size());
+      rebuildRowItems();
+      state = State::BROWSING;
+      nav.reset();
+      requestUpdate();
+      return;
+    } else {
+      ensureWifi([this] { loadShelf(ShelfView::CURRENTLY_READING, 0); });
+      return;
+    }
+  }
+
   {
     RenderLock lock(*this);
     state = State::LOADING;
@@ -304,6 +425,19 @@ void BookOrbitActivity::loadShelf(const ShelfView view, const int page) {
   const bool ok = BookOrbitClient::fetchBooks(shelfQuery, fetchedBooks, err, page, PAGE_SIZE, &fetchedTotal);
 
   if (!ok) {
+    if (view == ShelfView::CURRENTLY_READING) {
+      std::vector<BookOrbitBook> localBooks;
+      if (BookOrbitClient::loadLocalBooks(localBooks)) {
+        RenderLock lock(*this);
+        books = std::move(localBooks);
+        totalBooks = static_cast<int>(books.size());
+        rebuildRowItems();
+        state = State::BROWSING;
+        nav.reset();
+        requestUpdate();
+        return;
+      }
+    }
     {
       RenderLock lock(*this);
       errorMessage = err.empty() ? "Failed to fetch books from BookOrbit" : err;
@@ -422,10 +556,29 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
   screen.insetContent(fui::Insets{0, 16, 12, 16});
 
   struct TileDef {
-    const char* title;
-    const char* subtitle;
+    std::string title;
+    std::string subtitle;
     fui::BitmapRef icon;
+    bool isResume = false;
   };
+
+  std::vector<TileDef> tiles;
+  tiles.reserve(5);
+
+  std::string resumePath, resumeTitle, resumeAuthor;
+  int resumeProg = -1;
+  const bool hasResume = findLastOpenedBook(resumePath, resumeTitle, resumeAuthor, resumeProg);
+
+  if (hasResume) {
+    std::string sub = "Resume";
+    if (!resumeAuthor.empty()) {
+      sub += " \xC2\xB7 " + resumeAuthor;
+    }
+    if (resumeProg >= 0) {
+      sub += " \xC2\xB7 " + std::to_string(resumeProg) + "%";
+    }
+    tiles.push_back({std::move(resumeTitle), std::move(sub), fui::bitmapFromIcon(icon_book_open_32), true});
+  }
 
   char libSubtitle[64];
   if (!libraries.empty()) {
@@ -445,26 +598,25 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
     }
   }
 
-  const TileDef tiles[4] = {
-      {"Continue Reading", "Pick up where you left off", fui::bitmapFromIcon(icon_book_open_32)},
-      {"Search", "Find books, authors & series", fui::bitmapFromIcon(icon_search_32)},
-      {"Libraries", libSubtitle, fui::bitmapFromIcon(icon_library_32)},
-      {"Sync Progress", syncSubtitle, fui::bitmapFromIcon(icon_refresh_cw_32)},
-  };
+  tiles.push_back({"Continue Reading", "Pick up where you left off", fui::bitmapFromIcon(icon_book_open_32), false});
+  tiles.push_back({"Search", "Find books, authors & series", fui::bitmapFromIcon(icon_search_32), false});
+  tiles.push_back({"Libraries", libSubtitle, fui::bitmapFromIcon(icon_library_32), false});
+  tiles.push_back({"Sync Progress", syncSubtitle, fui::bitmapFromIcon(icon_refresh_cw_32), false});
 
+  const int numTiles = static_cast<int>(tiles.size());
   const fui::Rect area = screen.body();
-  const int16_t gap = 12;
-  const int16_t rawTileH = static_cast<int16_t>((area.height - 3 * gap) / 4);
-  const int16_t tileH = std::clamp<int16_t>(rawTileH, 76, 110);
-  const int16_t totalH = static_cast<int16_t>(4 * tileH + 3 * gap);
+  const int16_t gap = (numTiles >= 5) ? 10 : 12;
+  const int16_t rawTileH = static_cast<int16_t>((area.height - (numTiles - 1) * gap) / numTiles);
+  const int16_t tileH = std::clamp<int16_t>(rawTileH, 68, 105);
+  const int16_t totalH = static_cast<int16_t>(numTiles * tileH + (numTiles - 1) * gap);
   const int16_t startY = static_cast<int16_t>(area.y + std::max<int16_t>(0, (area.height - totalH) / 2));
 
   const int16_t titleLh = screen.target().lineHeight(theme.titleText.font);
   const int16_t subLh = screen.target().lineHeight(theme.smallText.font);
-  const int16_t textGap = 6;
+  const int16_t textGap = 4;
   const int16_t textBlockH = static_cast<int16_t>(titleLh + textGap + subLh);
 
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < numTiles; ++i) {
     const fui::Rect card{area.x, static_cast<int16_t>(startY + i * (tileH + gap)), area.width, tileH};
     const bool selected = (nav.selected == i);
 
@@ -480,11 +632,12 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
     const uint8_t radius = theme.controlRadius > 0 ? theme.controlRadius : 14;
 
     screen.target().fill(card, bg, radius);
-    screen.target().stroke(card, fui::Paint::solid(fui::Color::Black), 2, radius);
+    const int16_t strokeW = tiles[i].isResume ? 3 : 2;
+    screen.target().stroke(card, fui::Paint::solid(fui::Color::Black), strokeW, radius);
 
     // Leading 32x32 icon badge
     const int16_t iconSize = 32;
-    const int16_t iconX = static_cast<int16_t>(card.x + 22);
+    const int16_t iconX = static_cast<int16_t>(card.x + 20);
     const int16_t iconY = static_cast<int16_t>(card.y + (card.height - iconSize) / 2);
     screen.target().bitmap(fui::Rect{iconX, iconY, iconSize, iconSize}, tiles[i].icon, fui::BitmapMode::Center, fg);
 
@@ -496,19 +649,21 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
                            fui::BitmapMode::Center, fg);
 
     // Title + subtitle text column
-    const int16_t textX = static_cast<int16_t>(iconX + iconSize + 18);
+    const int16_t textX = static_cast<int16_t>(iconX + iconSize + 16);
     const int16_t textW = static_cast<int16_t>(chevX - textX - 10);
     const int16_t textY = static_cast<int16_t>(card.y + (card.height - textBlockH) / 2);
 
     fui::TextStyle titleStyle = fui::textStyleWithForeground(theme.titleText, fg);
     titleStyle.bold = true;
     titleStyle.align = fui::TextAlign::Left;
-    screen.target().text(fui::Rect{textX, textY, textW, titleLh}, tiles[i].title, titleStyle);
+    titleStyle.maxLines = 1;
+    screen.target().text(fui::Rect{textX, textY, textW, titleLh}, tiles[i].title.c_str(), titleStyle);
 
     fui::TextStyle subStyle = fui::textStyleWithForeground(theme.smallText, fg);
     subStyle.align = fui::TextAlign::Left;
+    subStyle.maxLines = 1;
     screen.target().text(fui::Rect{textX, static_cast<int16_t>(textY + titleLh + textGap), textW, subLh},
-                         tiles[i].subtitle, subStyle);
+                         tiles[i].subtitle.c_str(), subStyle);
   }
 }
 
@@ -605,14 +760,25 @@ void BookOrbitActivity::activateIndex(int index) {
   if (index < 0 || index >= listCount()) return;
 
   if (currentView == ShelfView::ROOT_MENU) {
-    if (index == 0) {
+    const bool hasResume = hasResumeBook();
+    if (hasResume && index == 0) {
+      std::string path, title, author;
+      int prog = -1;
+      if (findLastOpenedBook(path, title, author, prog)) {
+        openBook(path);
+      }
+      return;
+    }
+
+    const int actionIdx = hasResume ? (index - 1) : index;
+    if (actionIdx == 0) {
       loadShelf(ShelfView::CURRENTLY_READING, 0);
-    } else if (index == 1) {
-      launchSearch();
-    } else if (index == 2) {
-      loadLibrariesList();
-    } else if (index == 3) {
-      startProgressSync();
+    } else if (actionIdx == 1) {
+      ensureWifi([this] { launchSearch(); });
+    } else if (actionIdx == 2) {
+      ensureWifi([this] { loadLibrariesList(); });
+    } else if (actionIdx == 3) {
+      ensureWifi([this] { startProgressSync(); });
     }
     return;
   }
@@ -667,8 +833,11 @@ void BookOrbitActivity::startProgressSync() {
 void BookOrbitActivity::openBook(const std::string& path) {
   APP_STATE.openEpubPath = path;
   APP_STATE.saveToFile();
-  silentRestartToReader();
-  activityManager.goToReader(path);
+  if (WiFi.getMode() != WIFI_MODE_NULL) {
+    silentRestartToReader();
+  } else {
+    activityManager.goToReader(path);
+  }
 }
 
 void BookOrbitActivity::handleBookSelected(size_t index) {

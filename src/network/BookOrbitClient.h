@@ -92,6 +92,9 @@ class BookOrbitClient {
   // Scans BookOrbit download directory and pushes any pending progress syncs
   static void syncPendingProgress();
 
+  // Loads all downloaded and in-progress books from local storage (/books/BookOrbit)
+  static bool loadLocalBooks(std::vector<BookOrbitBook>& outBooks);
+
   // SD download directory for BookOrbit books
   static std::string getDownloadDir();
 };

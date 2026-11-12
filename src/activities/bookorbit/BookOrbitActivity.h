@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -79,6 +80,9 @@ class BookOrbitActivity final : public CatalogActivity {
 
   bool isPaginatedView() const;
   int totalPages() const;
+  bool findLastOpenedBook(std::string& outPath, std::string& outTitle, std::string& outAuthor, int& outProgress) const;
+  bool hasResumeBook() const;
+  void ensureWifi(std::function<void()> onConnected);
   void loadRootMenu();
   void loadLibrariesList();
   void loadShelf(ShelfView view, int page = 0);

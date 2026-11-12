@@ -9,6 +9,7 @@
 #include <cstdlib>
 
 #include "CrossPointSettings.h"
+#include "util/BookProgress.h"
 #include "util/OpdsFilename.h"
 
 namespace {
@@ -935,4 +936,82 @@ bool BookOrbitClient::syncAllProgress(int* outPushedCount, int* outPulledCount) 
 
   // 2. Pull latest server progress for all downloaded books
   return pullRemoteProgress(outPulledCount);
+}
+
+bool BookOrbitClient::loadLocalBooks(std::vector<BookOrbitBook>& outBooks) {
+  outBooks.clear();
+  const std::string downloadDir = getDownloadDir();
+  auto dir = Storage.open(downloadDir.c_str());
+  if (!dir || !dir.isDirectory()) {
+    return false;
+  }
+
+  dir.rewindDirectory();
+  std::vector<std::string> files;
+  char nameBuf[128];
+  for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+    if (entry.isDirectory()) continue;
+    entry.getName(nameBuf, sizeof(nameBuf));
+    const std::string name(nameBuf);
+    if (name.length() > 5 && name.rfind(".epub") == name.length() - 5) {
+      files.push_back(downloadDir + "/" + name);
+    }
+  }
+
+  for (const auto& epubPath : files) {
+    BookOrbitBook b;
+    b.isDownloaded = true;
+    b.localFilePath = epubPath;
+
+    const std::string metaPath = epubPath + ".meta.json";
+    std::string content;
+    if (Storage.exists(metaPath.c_str()) && Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) {
+      JsonDocument doc;
+      if (!deserializeJson(doc, content)) {
+        b.title = doc["title"] | "";
+        b.author = doc["author"] | "";
+        b.id = jsonVariantToIdString(doc["bookorbit"]["bookId"]);
+        b.fileId = jsonVariantToIdString(doc["bookorbit"]["fileId"]);
+        b.progress = doc["progress"] | 0.0f;
+        if (doc["seriesId"].is<int>()) {
+          b.seriesId = doc["seriesId"].as<int>();
+        }
+        b.seriesName = doc["seriesName"] | "";
+        b.seriesIndex = jsonVariantToIdString(doc["seriesIndex"]);
+      }
+    }
+
+    if (b.title.empty()) {
+      size_t slash = epubPath.rfind('/');
+      std::string name = (slash != std::string::npos) ? epubPath.substr(slash + 1) : epubPath;
+      if (name.length() > 5 && name.rfind(".epub") == name.length() - 5) {
+        name = name.substr(0, name.length() - 5);
+      }
+      size_t dash = name.find(" - ");
+      if (dash != std::string::npos) {
+        if (b.author.empty()) b.author = name.substr(0, dash);
+        b.title = name.substr(dash + 3);
+      } else {
+        b.title = name;
+      }
+    }
+
+    const int liveProg = loadBookProgress(epubPath);
+    if (liveProg >= 0) {
+      b.progress = static_cast<float>(liveProg) / 100.0f;
+    }
+
+    outBooks.push_back(std::move(b));
+  }
+
+  // Sort: active reading (0 < prog < 1) first, then higher progress, then title
+  std::sort(outBooks.begin(), outBooks.end(), [](const BookOrbitBook& a, const BookOrbitBook& b) {
+    const bool aActive = (a.progress > 0.0f && a.progress < 0.99f);
+    const bool bActive = (b.progress > 0.0f && b.progress < 0.99f);
+    if (aActive != bActive) return aActive > bActive;
+    if (a.progress != b.progress) return a.progress > b.progress;
+    return a.title < b.title;
+  });
+
+  return !outBooks.empty();
 }
