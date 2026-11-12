@@ -78,6 +78,13 @@ class BookOrbitClient {
   // forcePush pushes even when "sync on close" is off (used by the periodic in-reader sync).
   static void recordBookProgress(const std::string& bookPath, float progressRatio, bool forcePush = false);
 
+  // Pulls the server position for ONE downloaded book (Wi-Fi must be up). True if the sidecar changed, in
+  // which case the reader jumps to it on open.
+  static bool pullProgressForBook(const std::string& bookPath);
+  // Lets the next reader open skip its sync-on-open (survives a software reboot).
+  static void skipNextOpenSync();
+  static bool consumeSkipOpenSync();
+
   // Brings Wi-Fi up with the last-used saved network. Returns true once connected (or already connected).
   static bool connectWifiBriefly(unsigned long timeoutMs);
   // Fully powers the Wi-Fi radio down (no-op if it is already off).

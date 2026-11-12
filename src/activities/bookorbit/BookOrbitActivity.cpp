@@ -838,6 +838,7 @@ void BookOrbitActivity::startProgressSync() {
 void BookOrbitActivity::openBook(const std::string& path) {
   APP_STATE.openEpubPath = path;
   APP_STATE.saveToFile();
+  BookOrbitClient::skipNextOpenSync();  // BookOrbit just had its chance to sync (or the user skipped Wi-Fi)
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     silentRestartToReader();
   } else {

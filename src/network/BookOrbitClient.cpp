@@ -6,6 +6,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 
 #include <cstdlib>
@@ -787,6 +788,74 @@ bool BookOrbitClient::checkAndConsumeRemoteProgress(const std::string& bookPath,
   return false;
 }
 
+// Fetches the server's reading position for one downloaded book and, when it differs from the local one,
+// records it in the sidecar for the reader to jump to. Returns true if the sidecar was updated.
+static bool pullOneBook(const std::string& metaPath, const std::string& token) {
+  std::string content;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) return false;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, content)) return false;
+
+  const std::string fileId = jsonVariantToIdString(doc["bookorbit"]["fileId"]);
+  if (fileId.empty()) return false;
+
+  const std::string url = cleanBaseUrl(BOOKORBIT_STORE.getServerUrl()) + "/api/v1/reading-progress?fileId=" + fileId;
+  std::string response;
+  int status = 0;
+  HttpDownloader::FetchOptions opts;
+  opts.bearer = token;
+  opts.statusOut = &status;
+  const bool ok = HttpDownloader::fetchUrl(
+      url,
+      [&response](const uint8_t* data, size_t len) {
+        if (response.size() + len < 4096) {
+          response.append(reinterpret_cast<const char*>(data), len);
+        }
+        return true;
+      },
+      opts);
+  if (!ok || status != 200) {
+    return false;
+  }
+
+  JsonDocument respDoc;
+  if (deserializeJson(respDoc, response)) return false;
+
+  if (!respDoc["items"].is<JsonArrayConst>() || respDoc["items"].as<JsonArrayConst>().size() == 0) {
+    return false;
+  }
+
+  JsonObjectConst item = respDoc["items"][0];
+  if (!item["percentage"].is<float>()) return false;
+
+  const float serverPct = item["percentage"].as<float>();
+  const float serverRatio = serverPct / 100.0f;
+  const float currentProg = doc["progress"] | 0.0f;
+  const bool pendingSync = doc["pendingSync"] | false;
+
+  // If local has unpushed progress ahead of server, don't clobber it
+  if (pendingSync && currentProg > serverRatio) {
+    return false;
+  }
+
+  if (std::abs(serverRatio - currentProg) > 0.005f) {
+    LOG_INF("BKO", "Pulled newer server progress for %s: %.2f -> %.2f", fileId.c_str(), currentProg, serverRatio);
+    doc["progress"] = serverRatio;
+    doc["serverProgress"] = serverRatio;
+    doc["remoteProgressPending"] = true;
+    doc["pendingSync"] = false;
+
+    HalFile metaFile;
+    if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
+      serializeJson(doc, metaFile);
+      metaFile.close();
+      return true;
+    }
+  }
+  return false;
+}
+
 bool BookOrbitClient::pullRemoteProgress(int* outUpdatedCount) {
   if (outUpdatedCount) *outUpdatedCount = 0;
   if (!BOOKORBIT_STORE.isConfigured() || WiFi.status() != WL_CONNECTED) {
@@ -818,68 +887,7 @@ bool BookOrbitClient::pullRemoteProgress(int* outUpdatedCount) {
 
   int updated = 0;
   for (const auto& metaPath : metaFiles) {
-    std::string content;
-    if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) continue;
-
-    JsonDocument doc;
-    if (deserializeJson(doc, content)) continue;
-
-    const std::string fileId = jsonVariantToIdString(doc["bookorbit"]["fileId"]);
-    if (fileId.empty()) continue;
-
-    const std::string url = cleanBaseUrl(BOOKORBIT_STORE.getServerUrl()) + "/api/v1/reading-progress?fileId=" + fileId;
-    std::string response;
-    int status = 0;
-    HttpDownloader::FetchOptions opts;
-    opts.bearer = token;
-    opts.statusOut = &status;
-    const bool ok = HttpDownloader::fetchUrl(
-        url,
-        [&response](const uint8_t* data, size_t len) {
-          if (response.size() + len < 4096) {
-            response.append(reinterpret_cast<const char*>(data), len);
-          }
-          return true;
-        },
-        opts);
-    if (!ok || status != 200) {
-      continue;
-    }
-
-    JsonDocument respDoc;
-    if (deserializeJson(respDoc, response)) continue;
-
-    if (!respDoc["items"].is<JsonArrayConst>() || respDoc["items"].as<JsonArrayConst>().size() == 0) {
-      continue;
-    }
-
-    JsonObjectConst item = respDoc["items"][0];
-    if (!item["percentage"].is<float>()) continue;
-
-    const float serverPct = item["percentage"].as<float>();
-    const float serverRatio = serverPct / 100.0f;
-    const float currentProg = doc["progress"] | 0.0f;
-    const bool pendingSync = doc["pendingSync"] | false;
-
-    // If local has unpushed progress ahead of server, don't clobber it
-    if (pendingSync && currentProg > serverRatio) {
-      continue;
-    }
-
-    if (std::abs(serverRatio - currentProg) > 0.005f) {
-      LOG_INF("BKO", "Pulled newer server progress for %s: %.2f -> %.2f", fileId.c_str(), currentProg, serverRatio);
-      doc["progress"] = serverRatio;
-      doc["serverProgress"] = serverRatio;
-      doc["remoteProgressPending"] = true;
-      doc["pendingSync"] = false;
-
-      HalFile metaFile;
-      if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
-        serializeJson(doc, metaFile);
-        metaFile.close();
-        updated++;
-      }
-    }
+    if (pullOneBook(metaPath, token)) updated++;
   }
 
   if (outUpdatedCount) *outUpdatedCount = updated;
@@ -1068,4 +1076,28 @@ bool BookOrbitClient::pushProgressBurst(const std::string& bookPath, const float
           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
   return connected;
+}
+
+bool BookOrbitClient::pullProgressForBook(const std::string& bookPath) {
+  if (!BOOKORBIT_STORE.isConfigured() || WiFi.status() != WL_CONNECTED) return false;
+  std::string token, errMsg;
+  if (!ensureAuthenticated(token, errMsg)) return false;
+  const std::string metaPath = bookPath + ".meta.json";
+  if (!Storage.exists(metaPath.c_str())) return false;
+  return pullOneBook(metaPath, token);
+}
+
+namespace {
+// RTC_NOINIT survives ESP.restart() (not power loss): lets one reader open skip its sync, e.g. the reboot
+// that follows a sync, or a book opened from BookOrbit, which has just synced on its own.
+RTC_NOINIT_ATTR uint32_t g_skipOpenSyncMagic;
+constexpr uint32_t SKIP_OPEN_SYNC_MAGIC = 0x0B0C5A11;
+}  // namespace
+
+void BookOrbitClient::skipNextOpenSync() { g_skipOpenSyncMagic = SKIP_OPEN_SYNC_MAGIC; }
+
+bool BookOrbitClient::consumeSkipOpenSync() {
+  const bool skip = (g_skipOpenSyncMagic == SKIP_OPEN_SYNC_MAGIC);
+  g_skipOpenSyncMagic = 0;
+  return skip;
 }

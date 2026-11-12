@@ -3,8 +3,10 @@
 #include <BlePageTurner.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
+#include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <KOReaderDocumentId.h>
+#include <Logging.h>
 #include <Memory.h>
 #include <TrustedTime.h>
 
@@ -19,7 +21,10 @@
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "SilentRestart.h"
+#include "WifiCredentialStore.h"
 #include "XtcReaderActivity.h"
+#include "components/UITheme.h"
 #include "network/BookOrbitClient.h"
 #include "util/PluginEvents.h"
 
@@ -83,6 +88,43 @@ void ReaderActivity::maybePeriodicBookOrbitSync() {
   lastPageTurnMs = done;  // the burst blocked input briefly; restart the idle window
 }
 
+namespace {
+std::string g_openSyncPath;
+unsigned long g_openSyncMs = 0;
+}  // namespace
+
+bool ReaderActivity::syncBookOrbitOnOpen() {
+  constexpr unsigned long REPEAT_GUARD_MS = 10UL * 60 * 1000;  // re-entries (menus, KOReader sync) don't re-sync
+  if (!BOOKORBIT_STORE.isConfigured() || !BOOKORBIT_STORE.getSyncOnOpen()) return false;
+
+  std::string fileId, bookId;
+  if (!BookOrbitClient::getBookMetadata(bookPath, fileId, bookId, nullptr)) return false;  // not a BookOrbit book
+  if (BookOrbitClient::consumeSkipOpenSync()) return false;
+
+  const unsigned long now = millis();
+  if (g_openSyncPath == bookPath && now - g_openSyncMs < REPEAT_GUARD_MS) return false;
+  g_openSyncPath = bookPath;
+  g_openSyncMs = now;  // set even if the sync fails, so a dead network costs one delay, not one per re-entry
+
+  if (powerManager.getBatteryPercentage() < 20) return false;
+  WIFI_STORE.loadFromFile();
+  if (!WIFI_STORE.findCredential(WIFI_STORE.getLastConnectedSsid())) return false;
+
+  {
+    RenderLock lock(*this);
+    GUI.drawPopup(renderer, "Syncing with BookOrbit...");
+  }
+  if (BookOrbitClient::connectWifiBriefly(6000)) {
+    BookOrbitClient::syncPendingProgress();  // push anything this device still owes the server first
+    const bool jumped = BookOrbitClient::pullProgressForBook(bookPath);
+    LOG_INF("BKO", "open sync: server position %s", jumped ? "newer, will jump" : "unchanged");
+  } else {
+    LOG_INF("BKO", "open sync: no Wi-Fi, opening at local position");
+  }
+  BookOrbitClient::wifiOff();
+  return true;
+}
+
 void ReaderActivity::onEnter() {
   Activity::onEnter();
   lastPageTurnMs = lastPeriodicSyncMs = millis();
@@ -95,6 +137,16 @@ void ReaderActivity::onEnter() {
     LOG_ERR("READER", "File does not exist: %s", bookPath.c_str());
     finish();
     return;
+  }
+
+  // Sync-on-open runs before the reader allocates anything. The radio leaves the heap fragmented, so after
+  // using it reboot straight back into this book (the same defrag reboot the Wi-Fi screens use); the RTC skip
+  // flag stops the rebooted open from syncing again.
+  if (syncBookOrbitOnOpen()) {
+    APP_STATE.openEpubPath = bookPath;
+    APP_STATE.saveToFile();
+    BookOrbitClient::skipNextOpenSync();
+    silentRestartToReader();  // returns only if deep sleep supersedes it; then carry on normally
   }
 
   // Clear remembered book after opening it

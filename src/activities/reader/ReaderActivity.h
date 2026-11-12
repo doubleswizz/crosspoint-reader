@@ -72,6 +72,8 @@ class ReaderActivity : public Activity {
   void flushReaderSession();
   // Periodic BookOrbit progress push while reading (Settings > BookOrbit > Sync While Reading).
   void maybePeriodicBookOrbitSync();
+  // Sync-on-open for any BookOrbit book, whichever screen it was opened from. True if the radio was used.
+  bool syncBookOrbitOnOpen();
   unsigned long lastPageTurnMs = 0;
   unsigned long lastPeriodicSyncMs = 0;
 
