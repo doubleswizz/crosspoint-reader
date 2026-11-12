@@ -81,4 +81,5 @@ class BookOrbitActivity final : public CatalogActivity {
   void loadShelf(ShelfView view, int page = 0);
   void rebuildRowItems();
   void handleBookSelected(size_t index);
+  void openBook(const std::string& path);
 };

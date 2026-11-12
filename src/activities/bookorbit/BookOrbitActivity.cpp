@@ -11,6 +11,8 @@
 
 #include "BookOrbitStore.h"
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
+#include "SilentRestart.h"
 #include "activities/ActivityManager.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"
@@ -617,6 +619,17 @@ void BookOrbitActivity::activateIndex(int index) {
   }
 }
 
+// Leaving this Wi-Fi activity normally triggers a silent restart to Home (heap defrag),
+// which would swallow the reader launch. Route through the reboot-to-reader path instead:
+// it reboots on a clean heap straight into the book. Touch boards skip the reboot and fall
+// through to the in-place launch.
+void BookOrbitActivity::openBook(const std::string& path) {
+  APP_STATE.openEpubPath = path;
+  APP_STATE.saveToFile();
+  silentRestartToReader();
+  activityManager.goToReader(path);
+}
+
 void BookOrbitActivity::handleBookSelected(size_t index) {
   if (index >= books.size()) return;
   auto& book = books[index];
@@ -636,7 +649,7 @@ void BookOrbitActivity::handleBookSelected(size_t index) {
 
   // If already downloaded, immediately launch into reader!
   if (book.isDownloaded && !book.localFilePath.empty()) {
-    activityManager.goToReader(book.localFilePath);
+    openBook(book.localFilePath);
     return;
   }
 
@@ -719,7 +732,7 @@ void BookOrbitActivity::downloadFinished(const bool cancelled) {
   BookOrbitClient::checkLocalAvailability(book);
 
   if (book.isDownloaded && !book.localFilePath.empty()) {
-    activityManager.goToReader(book.localFilePath);
+    openBook(book.localFilePath);
   } else {
     state = State::BROWSING;
     rebuildRowItems();
