@@ -47,6 +47,29 @@ class HomeActivity final : public Activity {
 
   // Convert HomeMenuItem to menu index (used in onEnter)
   static int menuItemToIndex(HomeMenuItem item, HomeMenuItem slot, bool hasBookOrbit) {
+    if (hasBookOrbit) {
+      switch (item) {
+        case HomeMenuItem::BOOKORBIT_CONTINUE:
+          return 0;
+        case HomeMenuItem::BOOKORBIT_SEARCH:
+          return 1;
+        case HomeMenuItem::BOOKORBIT_LIBRARIES:
+          return 2;
+        case HomeMenuItem::BOOKORBIT_SYNC:
+          return 3;
+        case HomeMenuItem::MORE:
+        case HomeMenuItem::FILE_BROWSER:
+        case HomeMenuItem::LIBRARY:
+        case HomeMenuItem::PLUGINS:
+        case HomeMenuItem::OPDS_BROWSER:
+        case HomeMenuItem::BOOKORBIT:
+        case HomeMenuItem::FILE_TRANSFER:
+        case HomeMenuItem::SETTINGS_MENU:
+          return 4;
+        default:
+          return 0;
+      }
+    }
     int i = 0;
     if (item == HomeMenuItem::FILE_BROWSER) return i;
     ++i;
@@ -55,8 +78,6 @@ class HomeActivity final : public Activity {
     if (slot != HomeMenuItem::NONE && item == slot) return i;
     if (item == HomeMenuItem::PLUGINS) return 0;
     if (slot != HomeMenuItem::NONE) ++i;
-    if (item == HomeMenuItem::BOOKORBIT) return hasBookOrbit ? i : 0;
-    if (hasBookOrbit) ++i;
     // File Transfer also opens the OPDS browser, so it returns there without its slot.
     if (item == HomeMenuItem::FILE_TRANSFER || item == HomeMenuItem::OPDS_BROWSER) return i;
     ++i;
@@ -66,11 +87,26 @@ class HomeActivity final : public Activity {
 
   // Convert menu index to HomeMenuItem (used in loop)
   static HomeMenuItem indexToMenuItem(int idx, HomeMenuItem slot, bool hasBookOrbit) {
+    if (hasBookOrbit) {
+      switch (idx) {
+        case 0:
+          return HomeMenuItem::BOOKORBIT_CONTINUE;
+        case 1:
+          return HomeMenuItem::BOOKORBIT_SEARCH;
+        case 2:
+          return HomeMenuItem::BOOKORBIT_LIBRARIES;
+        case 3:
+          return HomeMenuItem::BOOKORBIT_SYNC;
+        case 4:
+          return HomeMenuItem::MORE;
+        default:
+          return HomeMenuItem::NONE;
+      }
+    }
     int i = 0;
     if (idx == i++) return HomeMenuItem::FILE_BROWSER;
     if (idx == i++) return HomeMenuItem::LIBRARY;
     if (slot != HomeMenuItem::NONE && idx == i++) return slot;
-    if (hasBookOrbit && idx == i++) return HomeMenuItem::BOOKORBIT;
     if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
     if (idx == i) return HomeMenuItem::SETTINGS_MENU;
     return HomeMenuItem::NONE;
@@ -82,7 +118,11 @@ class HomeActivity final : public Activity {
   void onFileTransferOpen();
   void onOpdsBrowserOpen();
   void onPluginsOpen();
-  void onBookOrbitOpen();
+  void onBookOrbitContinueOpen();
+  void onBookOrbitSearchOpen();
+  void onBookOrbitLibrariesOpen();
+  void onBookOrbitSyncOpen();
+  void onMoreOpen();
 
   int getMenuItemCount() const;
   bool storeCoverBuffer();    // Store frame buffer for cover image

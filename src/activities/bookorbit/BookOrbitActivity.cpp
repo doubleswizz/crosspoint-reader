@@ -17,6 +17,7 @@
 #include "activities/ActivityManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 #include "components/icons/listIcons.h"
@@ -33,17 +34,60 @@ constexpr int16_t PAGE_NEXT = 2;
 constexpr int16_t PAGE_LAST = 3;
 }  // namespace
 
-BookOrbitActivity::BookOrbitActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-    : CatalogActivity("BookOrbit", renderer, mappedInput) {}
+BookOrbitActivity::BookOrbitActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const EntryMode entryMode)
+    : CatalogActivity("BookOrbit", renderer, mappedInput), entryMode(entryMode) {}
 
 void BookOrbitActivity::onEnter() {
   CatalogActivity::onEnter();
   app.on(ACTION_PAGE, &BookOrbitActivity::onPageEvent, this);
-  loadRootMenu();
-  // Sync on open: join Wi-Fi, pull progress from other devices, push anything pending. Backing out of the
-  // Wi-Fi screen (or no network) simply leaves the offline home screen, so reading local books still works.
-  if (BOOKORBIT_STORE.isConfigured() && BOOKORBIT_STORE.getSyncOnOpen()) {
-    ensureWifi([this] { startProgressSync(); });
+
+  switch (entryMode) {
+    case EntryMode::CONTINUE_READING:
+      currentView = ShelfView::CURRENTLY_READING;
+      headerTitleStr = "Continue Reading";
+      if (BOOKORBIT_STORE.isConfigured() && BOOKORBIT_STORE.getSyncOnOpen()) {
+        ensureWifi([this] { startProgressSync(); },
+                   [this] {
+                     if (!tryLoadLocalContinueReading()) {
+                       finish();
+                     }
+                   });
+      } else if (wifiConnected()) {
+        loadShelf(ShelfView::CURRENTLY_READING, 0);
+      } else if (!tryLoadLocalContinueReading()) {
+        ensureWifi([this] { loadShelf(ShelfView::CURRENTLY_READING, 0); }, [this] { finish(); });
+      }
+      break;
+    case EntryMode::SEARCH:
+      currentView = ShelfView::SEARCH_RESULTS;
+      headerTitleStr = "Search";
+      ensureWifi([this] { launchInitialSearch(); }, [this] { finish(); });
+      break;
+    case EntryMode::LIBRARIES:
+      currentView = ShelfView::LIBRARIES_LIST;
+      headerTitleStr = "Libraries";
+      ensureWifi([this] { loadLibrariesList(); }, [this] { finish(); });
+      break;
+    case EntryMode::SYNC_ONLY:
+      headerTitleStr = "Sync";
+      if (!BOOKORBIT_STORE.isConfigured()) {
+        RenderLock lock(*this);
+        errorMessage = "BookOrbit is not configured";
+        state = State::ERROR;
+        requestUpdate();
+        return;
+      }
+      ensureWifi([this] { startProgressSync(); }, [this] { finish(); });
+      break;
+    case EntryMode::ROOT_MENU:
+    default:
+      loadRootMenu();
+      // Sync on open: join Wi-Fi, pull progress from other devices, push anything pending. Backing out of the
+      // Wi-Fi screen (or no network) simply leaves the offline BookOrbit screen, so reading local books still works.
+      if (BOOKORBIT_STORE.isConfigured() && BOOKORBIT_STORE.getSyncOnOpen()) {
+        ensureWifi([this] { startProgressSync(); });
+      }
+      break;
   }
 }
 
@@ -53,7 +97,7 @@ const char* BookOrbitActivity::headerTitle() const { return headerTitleStr.c_str
 
 int BookOrbitActivity::listCount() const {
   if (state != State::BROWSING) return 0;
-  if (currentView == ShelfView::ROOT_MENU) return 4;
+  if (currentView == ShelfView::ROOT_MENU) return 3;
   return static_cast<int>(rowItems.size());
 }
 
@@ -68,7 +112,11 @@ int BookOrbitActivity::totalPages() const {
 }
 
 void BookOrbitActivity::startBrowse() {
-  if (currentView == ShelfView::ROOT_MENU) {
+  if (entryMode == EntryMode::SYNC_ONLY) {
+    startProgressSync();
+  } else if (entryMode == EntryMode::SEARCH && activeSearchQuery.empty()) {
+    launchInitialSearch();
+  } else if (currentView == ShelfView::ROOT_MENU) {
     loadRootMenu();
   } else if (currentView == ShelfView::LIBRARIES_LIST) {
     loadLibrariesList();
@@ -78,10 +126,11 @@ void BookOrbitActivity::startBrowse() {
 }
 
 void BookOrbitActivity::retryBrowse() {
-  if (currentView == ShelfView::ROOT_MENU) {
+  if (entryMode == EntryMode::ROOT_MENU && currentView == ShelfView::ROOT_MENU) {
     loadRootMenu();
   } else if (!wifiConnected()) {
-    ensureWifi([this] { startBrowse(); });
+    ensureWifi([this] { startBrowse(); },
+               entryMode != EntryMode::ROOT_MENU ? std::function<void()>([this] { finish(); }) : nullptr);
   } else {
     startBrowse();
   }
@@ -97,7 +146,7 @@ void BookOrbitActivity::onBackButton() {
       loadLibrariesList();
       return;
     }
-    if (currentView != ShelfView::ROOT_MENU) {
+    if (entryMode == EntryMode::ROOT_MENU && currentView != ShelfView::ROOT_MENU) {
       activeSearchQuery.clear();
       loadRootMenu();
       return;
@@ -155,7 +204,7 @@ void BookOrbitActivity::onPageEvent(const fui::ActionEvent& event, void* user) {
   }
 }
 
-void BookOrbitActivity::ensureWifi(std::function<void()> onConnected) {
+void BookOrbitActivity::ensureWifi(std::function<void()> onConnected, std::function<void()> onCancelled) {
   if (wifiConnected()) {
     if (onConnected) onConnected();
     return;
@@ -173,8 +222,13 @@ void BookOrbitActivity::ensureWifi(std::function<void()> onConnected) {
   state = State::WIFI_SELECTION;
   requestUpdate();
 
-  startActivityForResult(std::move(wifi), [this, callback = std::move(onConnected)](const ActivityResult& result) {
+  startActivityForResult(std::move(wifi), [this, callback = std::move(onConnected),
+                                           cancelCb = std::move(onCancelled)](const ActivityResult& result) {
     if (result.isCancelled || !wifiConnected()) {
+      if (cancelCb) {
+        cancelCb();
+        return;
+      }
       RenderLock lock(*this);
       state = State::BROWSING;
       requestUpdate();
@@ -186,15 +240,47 @@ void BookOrbitActivity::ensureWifi(std::function<void()> onConnected) {
   });
 }
 
+void BookOrbitActivity::launchInitialSearch() {
+  auto keyboard = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SEARCH), searchPrefill());
+  if (!keyboard) {
+    LOG_ERR("BKO", "OOM: search keyboard");
+    fail(StrId::STR_MEMORY_ERROR);
+    return;
+  }
+  {
+    RenderLock lock(*this);
+    state = State::SEARCH_INPUT;
+  }
+  requestUpdate();
+  startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
+    if (result.isCancelled) {
+      finish();
+      return;
+    }
+    const std::string query = std::get<KeyboardResult>(result.data).text;
+    if (query.empty()) {
+      finish();
+      return;
+    }
+    state = State::BROWSING;
+    performSearch(query);
+  });
+}
+
 void BookOrbitActivity::performSearch(const std::string& query) {
   if (query.empty()) {
     activeSearchQuery.clear();
-    loadRootMenu();
+    if (entryMode == EntryMode::SEARCH) {
+      finish();
+    } else {
+      loadRootMenu();
+    }
     return;
   }
   activeSearchQuery = query;
   currentView = ShelfView::SEARCH_RESULTS;
-  ensureWifi([this] { loadShelf(currentView, 0); });
+  ensureWifi([this] { loadShelf(currentView, 0); },
+             entryMode == EntryMode::SEARCH ? std::function<void()>([this] { finish(); }) : nullptr);
 }
 
 void BookOrbitActivity::loadRootMenu() {
@@ -252,6 +338,25 @@ void BookOrbitActivity::loadLibrariesList() {
   requestUpdate();
 }
 
+bool BookOrbitActivity::tryLoadLocalContinueReading() {
+  std::vector<BookOrbitBook> localBooks;
+  if (!BookOrbitClient::loadLocalBooks(localBooks) || localBooks.empty()) {
+    return false;
+  }
+  currentView = ShelfView::CURRENTLY_READING;
+  headerTitleStr = "Continue Reading";
+  {
+    RenderLock lock(*this);
+    books = std::move(localBooks);
+    totalBooks = static_cast<int>(books.size());
+    rebuildRowItems();
+    state = State::BROWSING;
+    nav.reset();
+  }
+  requestUpdate();
+  return true;
+}
+
 void BookOrbitActivity::loadShelf(const ShelfView view, const int page) {
   currentView = view;
   currentPage = page;
@@ -288,20 +393,12 @@ void BookOrbitActivity::loadShelf(const ShelfView view, const int page) {
 
   // When offline, browsing "Continue Reading" directly shows locally downloaded/reading books!
   if (view == ShelfView::CURRENTLY_READING && !wifiConnected()) {
-    std::vector<BookOrbitBook> localBooks;
-    if (BookOrbitClient::loadLocalBooks(localBooks)) {
-      RenderLock lock(*this);
-      books = std::move(localBooks);
-      totalBooks = static_cast<int>(books.size());
-      rebuildRowItems();
-      state = State::BROWSING;
-      nav.reset();
-      requestUpdate();
-      return;
-    } else {
-      ensureWifi([this] { loadShelf(ShelfView::CURRENTLY_READING, 0); });
+    if (tryLoadLocalContinueReading()) {
       return;
     }
+    ensureWifi([this] { loadShelf(ShelfView::CURRENTLY_READING, 0); },
+               entryMode == EntryMode::CONTINUE_READING ? std::function<void()>([this] { finish(); }) : nullptr);
+    return;
   }
 
   {
@@ -482,7 +579,7 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
   };
 
   std::vector<TileDef> tiles;
-  tiles.reserve(4);
+  tiles.reserve(3);
 
   char libSubtitle[64];
   if (!libraries.empty()) {
@@ -502,7 +599,6 @@ void BookOrbitActivity::buildHomeTilesScreen(UiScreen& screen) {
     }
   }
 
-  tiles.push_back({"Continue Reading", "Pick up where you left off", fui::bitmapFromIcon(icon_book_open_32)});
   tiles.push_back({"Search", "Find books, authors & series", fui::bitmapFromIcon(icon_search_32)});
   tiles.push_back({"Libraries", libSubtitle, fui::bitmapFromIcon(icon_library_32)});
   tiles.push_back({"Sync Progress", syncSubtitle, fui::bitmapFromIcon(icon_refresh_cw_32)});
@@ -665,12 +761,10 @@ void BookOrbitActivity::activateIndex(int index) {
   if (currentView == ShelfView::ROOT_MENU) {
     const int actionIdx = index;
     if (actionIdx == 0) {
-      loadShelf(ShelfView::CURRENTLY_READING, 0);
-    } else if (actionIdx == 1) {
       ensureWifi([this] { launchSearch(); });
-    } else if (actionIdx == 2) {
+    } else if (actionIdx == 1) {
       ensureWifi([this] { loadLibrariesList(); });
-    } else if (actionIdx == 3) {
+    } else if (actionIdx == 2) {
       ensureWifi([this] { startProgressSync(); });
     }
     return;
@@ -711,12 +805,38 @@ void BookOrbitActivity::startProgressSync() {
   lastSyncPushedCount = pushed;
   lastSyncPulledCount = pulled;
 
+  if (entryMode == EntryMode::CONTINUE_READING) {
+    loadShelf(ShelfView::CURRENTLY_READING, 0);
+    return;
+  }
+  if (entryMode == EntryMode::SYNC_ONLY) {
+    finishSyncDialog();
+    return;
+  }
+
   {
     RenderLock lock(*this);
     state = State::BROWSING;
     currentView = ShelfView::ROOT_MENU;
   }
   requestUpdate();
+}
+
+void BookOrbitActivity::finishSyncDialog() {
+  char msg[96];
+  if (lastSyncPushedCount <= 0 && lastSyncPulledCount <= 0) {
+    snprintf(msg, sizeof(msg), "All books are up to date.");
+  } else {
+    snprintf(msg, sizeof(msg), "Synced (%d pushed, %d updated)", std::max(0, lastSyncPushedCount),
+             std::max(0, lastSyncPulledCount));
+  }
+  auto dialog = makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, "BookOrbit Sync", msg, "", "OK");
+  if (!dialog) {
+    finish();
+    return;
+  }
+  state = State::DONE;
+  startActivityForResult(std::move(dialog), [this](const ActivityResult&) { finish(); });
 }
 
 // Leaving this Wi-Fi activity normally triggers a silent restart to Home (heap defrag),

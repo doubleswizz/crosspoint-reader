@@ -3,11 +3,14 @@
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <WiFi.h>
 
 #include <algorithm>
 
+#include "BookOrbitSettingsActivity.h"
 #include "MappedInputManager.h"
 #include "SettingsActivity.h"
+#include "SilentRestart.h"
 #include "components/UITheme.h"
 #include "components/UiAppHelpers.h"
 
@@ -54,6 +57,10 @@ void SettingsListActivity::rebuildRows() {
     item.icon = fui::bitmapFromIcon(*SECTION_ICONS[i]);
     item.actionValue = static_cast<int16_t>(i);
   }
+  auto& boItem = rowItems_[BOOKORBIT_ROW_INDEX];
+  boItem.label = tr(STR_BOOKORBIT);
+  boItem.icon = fui::bitmapFromIcon(icon_book_open_32);
+  boItem.actionValue = static_cast<int16_t>(BOOKORBIT_ROW_INDEX);
 }
 
 void SettingsListActivity::buildScreen(UiScreen& screen) {
@@ -82,7 +89,32 @@ void SettingsListActivity::activateIndex(const int index) {
   // The section screen replaces this one; a lingering flash would gray an
   // unrelated element on return.
   app.clearTapFlash();
+  if (index == static_cast<int>(BOOKORBIT_ROW_INDEX)) {
+    openBookOrbitSettings();
+    return;
+  }
   openSection(static_cast<SettingsSection>(index));
+}
+
+void SettingsListActivity::openBookOrbitSettings() {
+  nav.selected = static_cast<int>(BOOKORBIT_ROW_INDEX);
+  auto activity = makeUniqueNoThrow<BookOrbitSettingsActivity>(renderer, mappedInput);
+  if (!activity) {
+    LOG_ERR("SETTINGS", "OOM: BookOrbitSettingsActivity");
+    return;
+  }
+  startActivityForResult(std::move(activity), [this](const ActivityResult&) {
+    if (WiFi.getMode() != WIFI_MODE_NULL) {
+      WiFi.disconnect(false);
+      delay(30);
+      RenderLock lock;
+      silentRestartToSettings();
+      return;
+    }
+    rebuildRows();
+    resetUi();
+    requestUpdate();
+  });
 }
 
 void SettingsListActivity::openSection(const SettingsSection section) {

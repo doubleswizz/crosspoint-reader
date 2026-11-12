@@ -18,7 +18,21 @@
 class Activity;    // forward declaration
 class RenderLock;  // forward declaration
 
-enum class HomeMenuItem { NONE, FILE_BROWSER, LIBRARY, PLUGINS, OPDS_BROWSER, BOOKORBIT, FILE_TRANSFER, SETTINGS_MENU };
+enum class HomeMenuItem {
+  NONE,
+  FILE_BROWSER,
+  LIBRARY,
+  PLUGINS,
+  OPDS_BROWSER,
+  BOOKORBIT,
+  BOOKORBIT_CONTINUE,
+  BOOKORBIT_SEARCH,
+  BOOKORBIT_LIBRARIES,
+  BOOKORBIT_SYNC,
+  MORE,
+  FILE_TRANSFER,
+  SETTINGS_MENU
+};
 
 /**
  * ActivityManager
@@ -94,6 +108,11 @@ class ActivityManager {
   void goToBrowser();
   void goToPlugins();
   void goToBookOrbit();
+  void goToBookOrbitContinueReading();
+  void goToBookOrbitSearch();
+  void goToBookOrbitLibraries();
+  void goToBookOrbitSync();
+  void goToMore();
   void goToReader(std::string path, bool allowFastInitialRefresh = false);
   void goToSleep(bool fromTimeout = false);
   void goToBoot();

@@ -23,6 +23,7 @@
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
+#include "home/MoreActivity.h"
 #include "library/LibraryListActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "network/UsbDriveActivity.h"
@@ -327,6 +328,25 @@ void ActivityManager::goToPlugins() {
 
 void ActivityManager::goToBookOrbit() { replaceActivity(std::make_unique<BookOrbitActivity>(renderer, mappedInput)); }
 
+void ActivityManager::goToBookOrbitContinueReading() {
+  replaceActivity(
+      std::make_unique<BookOrbitActivity>(renderer, mappedInput, BookOrbitActivity::EntryMode::CONTINUE_READING));
+}
+
+void ActivityManager::goToBookOrbitSearch() {
+  replaceActivity(std::make_unique<BookOrbitActivity>(renderer, mappedInput, BookOrbitActivity::EntryMode::SEARCH));
+}
+
+void ActivityManager::goToBookOrbitLibraries() {
+  replaceActivity(std::make_unique<BookOrbitActivity>(renderer, mappedInput, BookOrbitActivity::EntryMode::LIBRARIES));
+}
+
+void ActivityManager::goToBookOrbitSync() {
+  replaceActivity(std::make_unique<BookOrbitActivity>(renderer, mappedInput, BookOrbitActivity::EntryMode::SYNC_ONLY));
+}
+
+void ActivityManager::goToMore() { replaceActivity(std::make_unique<MoreActivity>(renderer, mappedInput)); }
+
 void ActivityManager::goToReader(std::string path, const bool allowFastInitialRefresh) {
   if (path.empty()) {
     goToFileBrowser("/");
@@ -372,8 +392,28 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
       initialMenuItem = HomeMenuItem::PLUGINS;
     } else if (activityName == "OpdsBookBrowser") {
       initialMenuItem = HomeMenuItem::OPDS_BROWSER;
+    } else if (activityName == "More") {
+      initialMenuItem = HomeMenuItem::MORE;
     } else if (activityName == "BookOrbit") {
-      initialMenuItem = HomeMenuItem::BOOKORBIT;
+      const auto* bo = static_cast<const BookOrbitActivity*>(currentActivity.get());
+      switch (bo->getEntryMode()) {
+        case BookOrbitActivity::EntryMode::CONTINUE_READING:
+          initialMenuItem = HomeMenuItem::BOOKORBIT_CONTINUE;
+          break;
+        case BookOrbitActivity::EntryMode::SEARCH:
+          initialMenuItem = HomeMenuItem::BOOKORBIT_SEARCH;
+          break;
+        case BookOrbitActivity::EntryMode::LIBRARIES:
+          initialMenuItem = HomeMenuItem::BOOKORBIT_LIBRARIES;
+          break;
+        case BookOrbitActivity::EntryMode::SYNC_ONLY:
+          initialMenuItem = HomeMenuItem::BOOKORBIT_SYNC;
+          break;
+        case BookOrbitActivity::EntryMode::ROOT_MENU:
+        default:
+          initialMenuItem = HomeMenuItem::BOOKORBIT;
+          break;
+      }
     } else if (activityName == "CrossPointWebServer") {
       initialMenuItem = HomeMenuItem::FILE_TRANSFER;
     } else if (activityName == "Settings" || activityName == "SettingsList") {

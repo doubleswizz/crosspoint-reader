@@ -9,6 +9,8 @@
 
 class BookOrbitActivity final : public CatalogActivity {
  public:
+  enum class EntryMode { ROOT_MENU, CONTINUE_READING, SEARCH, LIBRARIES, SYNC_ONLY };
+
   enum class ShelfView {
     ROOT_MENU,
     LIBRARIES_LIST,
@@ -21,7 +23,10 @@ class BookOrbitActivity final : public CatalogActivity {
     SERIES_BOOKS
   };
 
-  explicit BookOrbitActivity(GfxRenderer& renderer, MappedInputManager& mappedInput);
+  explicit BookOrbitActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                             EntryMode entryMode = EntryMode::ROOT_MENU);
+
+  EntryMode getEntryMode() const { return entryMode; }
 
   void onEnter() override;
   void onExit() override;
@@ -51,6 +56,7 @@ class BookOrbitActivity final : public CatalogActivity {
  private:
   static void onPageEvent(const freeink::ui::ActionEvent& event, void* user);
 
+  EntryMode entryMode = EntryMode::ROOT_MENU;
   ShelfView currentView = ShelfView::ROOT_MENU;
   ShelfView parentBeforeSeriesView = ShelfView::ROOT_MENU;
   int parentPageBeforeSeries = 0;
@@ -80,7 +86,10 @@ class BookOrbitActivity final : public CatalogActivity {
 
   bool isPaginatedView() const;
   int totalPages() const;
-  void ensureWifi(std::function<void()> onConnected);
+  void ensureWifi(std::function<void()> onConnected, std::function<void()> onCancelled = nullptr);
+  bool tryLoadLocalContinueReading();
+  void launchInitialSearch();
+  void finishSyncDialog();
   void loadRootMenu();
   void loadLibrariesList();
   void loadShelf(ShelfView view, int page = 0);
