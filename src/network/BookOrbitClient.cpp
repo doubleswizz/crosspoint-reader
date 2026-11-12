@@ -59,6 +59,19 @@ void parseBookArray(JsonArrayConst array, std::vector<BookOrbitBook>& outBooks) 
 
     book.description = item["description"] | "";
 
+    if (item["seriesId"].is<int>()) {
+      book.seriesId = item["seriesId"].as<int>();
+    }
+    book.seriesName = item["seriesName"] | "";
+    book.seriesIndex = jsonVariantToIdString(item["seriesIndex"]);
+
+    if (item["collapsedSeries"].is<JsonObjectConst>()) {
+      JsonObjectConst cs = item["collapsedSeries"].as<JsonObjectConst>();
+      book.isCollapsedSeries = (book.seriesId > 0);
+      book.seriesBookCount = cs["bookCount"] | 1;
+      book.seriesReadCount = cs["readCount"] | 0;
+    }
+
     // BookOrbit readingProgress can be a float (0..100 or 0..1) or an object { percentage: 0..100 }
     if (item["readingProgress"].is<float>()) {
       float p = item["readingProgress"].as<float>();
@@ -291,6 +304,7 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
 
   const bool isScroller = (shelfOrEndpoint == "currently-reading" || shelfOrEndpoint == "continue-reading" ||
                            shelfOrEndpoint == "want-to-read" || shelfOrEndpoint == "recently-added");
+  const bool isSeries = (shelfOrEndpoint.rfind("series:", 0) == 0);
 
   if (isScroller) {
     url = baseUrl + "/api/v1/dashboard/scrollers/batch";
@@ -301,10 +315,16 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
     item["type"] = scrollerType;
     item["limit"] = pageSize;
     serializeJson(reqDoc, postBody);
+  } else if (isSeries) {
+    const std::string seriesId = shelfOrEndpoint.substr(7);
+    url = baseUrl + "/api/v1/series/" + seriesId + "/books?page=" + std::to_string(page) +
+          "&size=" + std::to_string(pageSize);
   } else if (shelfOrEndpoint.rfind("library:", 0) == 0) {
     const std::string libId = shelfOrEndpoint.substr(8);
     url = baseUrl + "/api/v1/libraries/" + libId + "/books";
     JsonDocument reqDoc;
+    reqDoc["collapseSeries"] = true;
+    reqDoc["collapseLinked"] = true;
     JsonObject sortObj = reqDoc["sort"].to<JsonArray>().add<JsonObject>();
     sortObj["field"] = "title";
     sortObj["dir"] = "asc";
@@ -319,6 +339,8 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
     } else if (shelfOrEndpoint.rfind("/api/v1/books?q=", 0) == 0) {
       reqDoc["q"] = shelfOrEndpoint.substr(16);
     }
+    reqDoc["collapseSeries"] = true;
+    reqDoc["collapseLinked"] = true;
     JsonObject sortObj = reqDoc["sort"].to<JsonArray>().add<JsonObject>();
     sortObj["field"] = "title";
     sortObj["dir"] = "asc";
@@ -332,12 +354,43 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
   jsonPayload.reserve(16384);
 
   int status = 0;
-  bool ok = HttpDownloader::postJson(url, postBody, jsonPayload, token, &status, MAX_PAYLOAD_SIZE);
-  if (status == 401) {
-    // Token may have expired; force refresh and retry once
-    if (ensureAuthenticated(token, outErrorMessage, true)) {
+  bool ok = false;
+  if (isSeries) {
+    HttpDownloader::FetchOptions opts;
+    opts.bearer = token;
+    opts.statusOut = &status;
+    ok = HttpDownloader::fetchUrl(
+        url,
+        [&jsonPayload](const uint8_t* data, size_t len) {
+          if (jsonPayload.size() + len <= MAX_PAYLOAD_SIZE) {
+            jsonPayload.append(reinterpret_cast<const char*>(data), len);
+            return true;
+          }
+          return false;
+        },
+        opts);
+    if (status == 401 && ensureAuthenticated(token, outErrorMessage, true)) {
       jsonPayload.clear();
-      ok = HttpDownloader::postJson(url, postBody, jsonPayload, token, &status, MAX_PAYLOAD_SIZE);
+      opts.bearer = token;
+      ok = HttpDownloader::fetchUrl(
+          url,
+          [&jsonPayload](const uint8_t* data, size_t len) {
+            if (jsonPayload.size() + len <= MAX_PAYLOAD_SIZE) {
+              jsonPayload.append(reinterpret_cast<const char*>(data), len);
+              return true;
+            }
+            return false;
+          },
+          opts);
+    }
+  } else {
+    ok = HttpDownloader::postJson(url, postBody, jsonPayload, token, &status, MAX_PAYLOAD_SIZE);
+    if (status == 401) {
+      // Token may have expired; force refresh and retry once
+      if (ensureAuthenticated(token, outErrorMessage, true)) {
+        jsonPayload.clear();
+        ok = HttpDownloader::postJson(url, postBody, jsonPayload, token, &status, MAX_PAYLOAD_SIZE);
+      }
     }
   }
 
@@ -354,6 +407,9 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
     bookFilter["id"] = true;
     bookFilter["title"] = true;
     bookFilter["authors"] = true;
+    bookFilter["seriesId"] = true;
+    bookFilter["seriesName"] = true;
+    bookFilter["seriesIndex"] = true;
     bookFilter["readingProgress"] = true;
     bookFilter["files"][0]["id"] = true;
     bookFilter["files"][0]["format"] = true;
@@ -363,6 +419,11 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
     bookFilter["id"] = true;
     bookFilter["title"] = true;
     bookFilter["authors"] = true;
+    bookFilter["seriesId"] = true;
+    bookFilter["seriesName"] = true;
+    bookFilter["seriesIndex"] = true;
+    bookFilter["collapsedSeries"]["bookCount"] = true;
+    bookFilter["collapsedSeries"]["readCount"] = true;
     bookFilter["readingProgress"] = true;
     bookFilter["files"][0]["id"] = true;
     bookFilter["files"][0]["format"] = true;
@@ -381,7 +442,29 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
     if (!scrollers.isNull() && scrollers.size() > 0) {
       JsonArrayConst booksArr = scrollers[0]["books"].as<JsonArrayConst>();
       if (!booksArr.isNull()) {
-        parseBookArray(booksArr, outBooks);
+        std::vector<BookOrbitBook> rawBooks;
+        parseBookArray(booksArr, rawBooks);
+        // Smush series in scroller lists too so series are always smushed everywhere
+        for (auto& b : rawBooks) {
+          if (b.seriesId > 0 && !b.seriesName.empty()) {
+            bool merged = false;
+            for (auto& existing : outBooks) {
+              if (existing.seriesId == b.seriesId) {
+                existing.isCollapsedSeries = true;
+                existing.seriesBookCount++;
+                merged = true;
+                break;
+              }
+            }
+            if (!merged) {
+              b.isCollapsedSeries = true;
+              b.seriesBookCount = 1;
+              outBooks.push_back(std::move(b));
+            }
+          } else {
+            outBooks.push_back(std::move(b));
+          }
+        }
       }
     }
     if (outTotal) *outTotal = static_cast<int>(outBooks.size());

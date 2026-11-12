@@ -25,6 +25,14 @@ struct BookOrbitBook {
   float progress = 0.0f;
   bool isDownloaded = false;
   std::string localFilePath;
+
+  // Series metadata & collapsed series ("smushed" series) info
+  int seriesId = 0;
+  std::string seriesName;
+  std::string seriesIndex;
+  bool isCollapsedSeries = false;
+  int seriesBookCount = 0;
+  int seriesReadCount = 0;
 };
 
 class BookOrbitClient {
@@ -40,8 +48,8 @@ class BookOrbitClient {
   // Fetches available libraries on the BookOrbit server
   static bool fetchLibraries(std::vector<BookOrbitLibrary>& outLibraries, std::string& outErrorMessage);
 
-  // Fetches reading list / books from a shelf or library ("currently-reading", "want-to-read", "recently-added",
-  // "library:<id>", "search:<q>", or "")
+  // Fetches reading list / books from a shelf, library, search, or series ("currently-reading", "want-to-read",
+  // "recently-added", "library:<id>", "search:<q>", "series:<id>", or "")
   static bool fetchBooks(const std::string& shelfOrEndpoint, std::vector<BookOrbitBook>& outBooks,
                          std::string& outErrorMessage, int page = 0, int pageSize = 25, int* outTotal = nullptr);
 
