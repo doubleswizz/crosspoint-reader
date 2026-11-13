@@ -85,6 +85,14 @@ class BookOrbitClient {
   static void skipNextOpenSync();
   static bool consumeSkipOpenSync();
 
+  // Shared 5-minute sync cooldown across reboots/sleeps via RTC memory + wall clock.
+  static bool wasAutoSyncCooledDown(uint32_t windowSeconds = 300);
+  static void markSyncedNow();
+  static void markSyncAttempted();
+
+  // Returns true if any downloaded BookOrbit book has unpushed local progress (pendingSync == true).
+  static bool hasPendingSync();
+
   // Brings Wi-Fi up with the last-used saved network. Returns true once connected (or already connected).
   static bool connectWifiBriefly(unsigned long timeoutMs);
   // Fully powers the Wi-Fi radio down (no-op if it is already off).

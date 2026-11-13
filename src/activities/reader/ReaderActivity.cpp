@@ -88,23 +88,17 @@ void ReaderActivity::maybePeriodicBookOrbitSync() {
   lastPageTurnMs = done;  // the burst blocked input briefly; restart the idle window
 }
 
-namespace {
-std::string g_openSyncPath;
-unsigned long g_openSyncMs = 0;
-}  // namespace
-
 bool ReaderActivity::syncBookOrbitOnOpen() {
-  constexpr unsigned long REPEAT_GUARD_MS = 10UL * 60 * 1000;  // re-entries (menus, KOReader sync) don't re-sync
+  constexpr unsigned long SYNC_COOLDOWN_SEC = 5UL * 60;  // skip auto-sync if a sync ran within 5 minutes
   if (!BOOKORBIT_STORE.isConfigured() || !BOOKORBIT_STORE.getSyncOnOpen()) return false;
 
   std::string fileId, bookId;
   if (!BookOrbitClient::getBookMetadata(bookPath, fileId, bookId, nullptr)) return false;  // not a BookOrbit book
   if (BookOrbitClient::consumeSkipOpenSync()) return false;
-
-  const unsigned long now = millis();
-  if (g_openSyncPath == bookPath && now - g_openSyncMs < REPEAT_GUARD_MS) return false;
-  g_openSyncPath = bookPath;
-  g_openSyncMs = now;  // set even if the sync fails, so a dead network costs one delay, not one per re-entry
+  if (BookOrbitClient::wasAutoSyncCooledDown(SYNC_COOLDOWN_SEC)) {
+    LOG_INF("BKO", "open sync skipped: synced within last 5 minutes");
+    return false;
+  }
 
   if (powerManager.getBatteryPercentage() < 20) return false;
   WIFI_STORE.loadFromFile();
@@ -115,10 +109,13 @@ bool ReaderActivity::syncBookOrbitOnOpen() {
     GUI.drawPopup(renderer, "Syncing with BookOrbit...");
   }
   if (BookOrbitClient::connectWifiBriefly(6000)) {
-    BookOrbitClient::syncPendingProgress();  // push anything this device still owes the server first
-    const bool jumped = BookOrbitClient::pullProgressForBook(bookPath);
-    LOG_INF("BKO", "open sync: server position %s", jumped ? "newer, will jump" : "unchanged");
+    int pushed = 0, pulled = 0;
+    if (!BookOrbitClient::syncAllProgress(&pushed, &pulled)) {
+      BookOrbitClient::markSyncAttempted();
+    }
+    LOG_INF("BKO", "open sync: pushed=%d pulled=%d", pushed, pulled);
   } else {
+    BookOrbitClient::markSyncAttempted();
     LOG_INF("BKO", "open sync: no Wi-Fi, opening at local position");
   }
   BookOrbitClient::wifiOff();

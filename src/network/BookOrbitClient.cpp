@@ -952,7 +952,11 @@ bool BookOrbitClient::syncAllProgress(int* outPushedCount, int* outPulledCount) 
   if (outPushedCount) *outPushedCount = pushed;
 
   // 2. Pull latest server progress for all downloaded books
-  return pullRemoteProgress(outPulledCount);
+  const bool pulledOk = pullRemoteProgress(outPulledCount);
+  if (pulledOk) {
+    markSyncedNow();
+  }
+  return pulledOk;
 }
 
 bool BookOrbitClient::loadLocalBooks(std::vector<BookOrbitBook>& outBooks) {
@@ -1076,6 +1080,7 @@ bool BookOrbitClient::pushProgressBurst(const std::string& bookPath, const float
   const bool connected = connectWifiBriefly(8000);
   if (connected) {
     recordBookProgress(bookPath, progressRatio, /*forcePush=*/true);
+    syncPendingProgress();  // Also flush any other books with unpushed offline progress
   }
   if (!radioWasUp) wifiOff();
   LOG_INF("BKO", "periodic sync %s; internal free=%u block=%u", connected ? "done" : "failed (no Wi-Fi)",
@@ -1094,10 +1099,17 @@ bool BookOrbitClient::pullProgressForBook(const std::string& bookPath) {
 }
 
 namespace {
-// RTC_NOINIT survives ESP.restart() (not power loss): lets one reader open skip its sync, e.g. the reboot
-// that follows a sync, or a book opened from BookOrbit, which has just synced on its own.
+// RTC_NOINIT survives ESP.restart() and deep sleep (not power loss): lets one reader open skip its sync
+// (e.g. the reboot that follows a sync) and tracks when the last sync ran so rapid navigation doesn't re-sync.
 RTC_NOINIT_ATTR uint32_t g_skipOpenSyncMagic;
 constexpr uint32_t SKIP_OPEN_SYNC_MAGIC = 0x0B0C5A11;
+
+RTC_NOINIT_ATTR uint32_t g_lastSyncMagic;
+RTC_NOINIT_ATTR int64_t g_lastSyncEpochSec;
+RTC_NOINIT_ATTR uint32_t g_lastAttemptMagic;
+RTC_NOINIT_ATTR int64_t g_lastAttemptEpochSec;
+constexpr uint32_t LAST_SYNC_MAGIC = 0x0B0C5A12;
+constexpr uint32_t LAST_ATTEMPT_MAGIC = 0x0B0C5A13;
 }  // namespace
 
 void BookOrbitClient::skipNextOpenSync() { g_skipOpenSyncMagic = SKIP_OPEN_SYNC_MAGIC; }
@@ -1106,4 +1118,55 @@ bool BookOrbitClient::consumeSkipOpenSync() {
   const bool skip = (g_skipOpenSyncMagic == SKIP_OPEN_SYNC_MAGIC);
   g_skipOpenSyncMagic = 0;
   return skip;
+}
+
+void BookOrbitClient::markSyncedNow() {
+  const int64_t now = static_cast<int64_t>(time(nullptr));
+  g_lastSyncMagic = LAST_SYNC_MAGIC;
+  g_lastSyncEpochSec = now;
+  g_lastAttemptMagic = LAST_ATTEMPT_MAGIC;
+  g_lastAttemptEpochSec = now;
+}
+
+void BookOrbitClient::markSyncAttempted() {
+  g_lastAttemptMagic = LAST_ATTEMPT_MAGIC;
+  g_lastAttemptEpochSec = static_cast<int64_t>(time(nullptr));
+}
+
+bool BookOrbitClient::wasAutoSyncCooledDown(const uint32_t windowSeconds) {
+  const int64_t now = static_cast<int64_t>(time(nullptr));
+  const int64_t win = static_cast<int64_t>(windowSeconds);
+  if (g_lastSyncMagic == LAST_SYNC_MAGIC && now >= g_lastSyncEpochSec && (now - g_lastSyncEpochSec) < win) {
+    return true;
+  }
+  if (g_lastAttemptMagic == LAST_ATTEMPT_MAGIC && now >= g_lastAttemptEpochSec && (now - g_lastAttemptEpochSec) < win) {
+    return true;
+  }
+  return false;
+}
+
+bool BookOrbitClient::hasPendingSync() {
+  if (!BOOKORBIT_STORE.isEnabled()) return false;
+  const std::string downloadDir = getDownloadDir();
+  auto dir = Storage.open(downloadDir.c_str());
+  if (!dir || !dir.isDirectory()) return false;
+
+  dir.rewindDirectory();
+  char nameBuf[128];
+  for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+    if (entry.isDirectory()) continue;
+    entry.getName(nameBuf, sizeof(nameBuf));
+    const std::string name(nameBuf);
+    if (name.length() <= 10 || name.rfind(".meta.json") != name.length() - 10) continue;
+
+    std::string content;
+    const std::string metaPath = downloadDir + "/" + name;
+    if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) continue;
+    JsonDocument doc;
+    if (deserializeJson(doc, content)) continue;
+    if (doc["pendingSync"] | false) {
+      return true;
+    }
+  }
+  return false;
 }

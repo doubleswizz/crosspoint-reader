@@ -668,6 +668,9 @@ void HomeActivity::onBookOrbitSyncOpen() {
   int pushed = 0, pulled = 0;
   const bool ok = connected && BookOrbitClient::syncAllProgress(&pushed, &pulled);
   BookOrbitClient::wifiOff();
+  if (!ok) {
+    BookOrbitClient::markSyncAttempted();
+  }
 
   char resultMsg[64];
   if (!connected) {

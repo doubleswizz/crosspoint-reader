@@ -410,6 +410,7 @@ static void bookOrbitSleepSync(const bool allowNetwork) {
   if (!allowNetwork || !APP_STATE.lastSleepFromReader) return;
   if (!BOOKORBIT_STORE.isConfigured() || !BOOKORBIT_STORE.getSyncOnClose()) return;
   if (powerManager.getBatteryPercentage() < 20) return;
+  if (!BookOrbitClient::hasPendingSync()) return;
   GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
   if (BookOrbitClient::connectWifiBriefly(8000)) {
     BookOrbitClient::syncPendingProgress();

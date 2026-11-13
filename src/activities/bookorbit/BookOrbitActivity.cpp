@@ -46,9 +46,11 @@ void BookOrbitActivity::onEnter() {
     case EntryMode::CONTINUE_READING:
       currentView = ShelfView::CURRENTLY_READING;
       headerTitleStr = "Continue Reading";
-      if (BOOKORBIT_STORE.isConfigured() && BOOKORBIT_STORE.getSyncOnOpen()) {
+      if (BOOKORBIT_STORE.isConfigured() && BOOKORBIT_STORE.getSyncOnOpen() &&
+          !BookOrbitClient::wasAutoSyncCooledDown(300)) {
         ensureWifi([this] { startProgressSync(); },
                    [this] {
+                     BookOrbitClient::markSyncAttempted();
                      if (!tryLoadLocalContinueReading()) {
                        finish();
                      }
@@ -83,10 +85,11 @@ void BookOrbitActivity::onEnter() {
     case EntryMode::ROOT_MENU:
     default:
       loadRootMenu();
-      // Sync on open: join Wi-Fi, pull progress from other devices, push anything pending. Backing out of the
-      // Wi-Fi screen (or no network) simply leaves the offline BookOrbit screen, so reading local books still works.
-      if (BOOKORBIT_STORE.isConfigured() && BOOKORBIT_STORE.getSyncOnOpen()) {
-        ensureWifi([this] { startProgressSync(); });
+      // Sync on open: join Wi-Fi, pull progress from other devices, push anything pending. Skip if a sync
+      // already ran within the last 5 minutes, and keep offline local reading working if Wi-Fi is cancelled.
+      if (BOOKORBIT_STORE.isConfigured() && BOOKORBIT_STORE.getSyncOnOpen() &&
+          !BookOrbitClient::wasAutoSyncCooledDown(300)) {
+        ensureWifi([this] { startProgressSync(); }, [] { BookOrbitClient::markSyncAttempted(); });
       }
       break;
   }
@@ -817,7 +820,9 @@ void BookOrbitActivity::startProgressSync() {
   requestUpdate();
 
   int pushed = 0, pulled = 0;
-  BookOrbitClient::syncAllProgress(&pushed, &pulled);
+  if (!BookOrbitClient::syncAllProgress(&pushed, &pulled)) {
+    BookOrbitClient::markSyncAttempted();
+  }
   lastSyncPushedCount = pushed;
   lastSyncPulledCount = pulled;
 
