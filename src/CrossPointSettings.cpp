@@ -97,10 +97,9 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // option lists depend on the SD font registry), so the generic loop skips them.
   doc["fontFamily"] = STORED_NOTOSANS;
   doc["fontSize"] = fontPointSize;
-  // SD card font family name — not in SettingsList, save manually
-  if (sdFontFamilyName[0] != '\0') {
-    doc["sdFontFamilyName"] = sdFontFamilyName;
-  }
+  // SD card font family name — always serialized so an explicit switch back to
+  // built-in NotoSans ("") persists separately from an absent key.
+  doc["sdFontFamilyName"] = sdFontFamilyName;
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, save manually
   if (dictionaryName[0] != '\0') {
     doc["dictionaryName"] = dictionaryName;
@@ -282,10 +281,9 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   }
 
   // SD card font family name — not in SettingsList, load manually
-  const char* sfn = doc["sdFontFamilyName"] | "";
-  strncpy(sdFontFamilyName, sfn, sizeof(sdFontFamilyName) - 1);
-  sdFontFamilyName[sizeof(sdFontFamilyName) - 1] = '\0';
-  if (sdFontFamilyName[0] == '\0') {
+  if (doc["sdFontFamilyName"].is<const char*>()) {
+    copyToField(sdFontFamilyName, doc["sdFontFamilyName"].as<const char*>(), sizeof(sdFontFamilyName));
+  } else {
     switch (storedFontFamily) {
       case LEGACY_NOTOSERIF:
         copyToField(sdFontFamilyName, "NotoSerif", sizeof(sdFontFamilyName));
@@ -293,7 +291,12 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       case LEGACY_OPENDYSLEXIC:
         copyToField(sdFontFamilyName, "OpenDyslexic", sizeof(sdFontFamilyName));
         break;
+      default:
+        // Absent key (upgrade from pre-bundled settings): retain in-memory default
+        // ("Libron" when BUNDLED_SD_FONTS is enabled, "" otherwise).
+        break;
     }
+    needsResave = true;
   }
   if (storedFontFamily != STORED_NOTOSANS) needsResave = true;
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, load manually

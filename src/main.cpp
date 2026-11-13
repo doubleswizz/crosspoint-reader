@@ -31,6 +31,7 @@
 #include <cstring>
 
 #include "BookOrbitStore.h"
+#include "BundledSdFonts.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
@@ -750,6 +751,7 @@ void setup() {
   bool allowFastInitialReaderRefresh = false;
   bool needsWakeRefresh = false;
 
+  BundledSdFonts::ensureInstalled();
   setupDisplayAndFonts(resume != BootResume::Splash);
 
   switch (resume) {

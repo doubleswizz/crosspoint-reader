@@ -364,7 +364,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t focusReadingEnabled = 0;
   uint8_t readerMenuStyle = READER_MENU_LIST;
   // SD card font family name (empty = use built-in fontFamily)
+#ifdef BUNDLED_SD_FONTS
+  char sdFontFamilyName[32] = "Libron";
+#else
   char sdFontFamilyName[32] = "";
+#endif
   // Dictionary folder name under /dictionaries (empty = no dictionary)
   char dictionaryName[32] = "";
   // Save successful dictionary lookups to vocabulary history (default off).
