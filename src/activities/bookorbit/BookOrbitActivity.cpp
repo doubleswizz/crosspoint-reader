@@ -533,11 +533,12 @@ void BookOrbitActivity::rebuildRowItems() {
   rowValues.reserve(books.size());
 
   const bool inSeriesView = (currentView == ShelfView::SERIES_BOOKS);
+  const bool showIndividualBooks = inSeriesView || (currentView == ShelfView::CURRENTLY_READING);
 
   for (size_t i = 0; i < books.size(); i++) {
     const auto& book = books[i];
     const bool isSeriesRow =
-        !inSeriesView && (book.isCollapsedSeries || (book.seriesId > 0 && !book.seriesName.empty()));
+        !showIndividualBooks && (book.isCollapsedSeries || (book.seriesId > 0 && !book.seriesName.empty()));
 
     if (isSeriesRow) {
       std::string seriesTitle = !book.seriesName.empty() ? book.seriesName : book.title;
@@ -873,10 +874,12 @@ void BookOrbitActivity::handleBookSelected(size_t index) {
   if (index >= books.size()) return;
   auto& book = books[index];
 
-  // If this row represents a smushed series (and we aren't already inside SERIES_BOOKS),
+  // If this row represents a smushed series (and we aren't in Continue Reading or inside SERIES_BOOKS),
   // open the series to browse its individual books in series order!
-  const bool isSeriesRow = (currentView != ShelfView::SERIES_BOOKS) &&
-                           (book.isCollapsedSeries || (book.seriesId > 0 && !book.seriesName.empty()));
+  const bool showIndividualBooks =
+      (currentView == ShelfView::SERIES_BOOKS) || (currentView == ShelfView::CURRENTLY_READING);
+  const bool isSeriesRow =
+      !showIndividualBooks && (book.isCollapsedSeries || (book.seriesId > 0 && !book.seriesName.empty()));
   if (isSeriesRow && book.seriesId > 0) {
     parentBeforeSeriesView = currentView;
     parentPageBeforeSeries = currentPage;

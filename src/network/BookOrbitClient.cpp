@@ -452,25 +452,31 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
       if (!booksArr.isNull()) {
         std::vector<BookOrbitBook> rawBooks;
         parseBookArray(booksArr, rawBooks);
-        // Smush series in scroller lists too so series are always smushed everywhere
-        for (auto& b : rawBooks) {
-          if (b.seriesId > 0 && !b.seriesName.empty()) {
-            bool merged = false;
-            for (auto& existing : outBooks) {
-              if (existing.seriesId == b.seriesId) {
-                existing.isCollapsedSeries = true;
-                existing.seriesBookCount++;
-                merged = true;
-                break;
+        // Keep Continue Reading as individual books so clicking opens the book directly;
+        // smush series only for other scroller shelves (want-to-read, recently-added).
+        const bool smushSeries = (shelfOrEndpoint != "continue-reading" && shelfOrEndpoint != "currently-reading");
+        if (!smushSeries) {
+          outBooks = std::move(rawBooks);
+        } else {
+          for (auto& b : rawBooks) {
+            if (b.seriesId > 0 && !b.seriesName.empty()) {
+              bool merged = false;
+              for (auto& existing : outBooks) {
+                if (existing.seriesId == b.seriesId) {
+                  existing.isCollapsedSeries = true;
+                  existing.seriesBookCount++;
+                  merged = true;
+                  break;
+                }
               }
-            }
-            if (!merged) {
-              b.isCollapsedSeries = true;
-              b.seriesBookCount = 1;
+              if (!merged) {
+                b.isCollapsedSeries = true;
+                b.seriesBookCount = 1;
+                outBooks.push_back(std::move(b));
+              }
+            } else {
               outBooks.push_back(std::move(b));
             }
-          } else {
-            outBooks.push_back(std::move(b));
           }
         }
       }
