@@ -165,7 +165,7 @@ void OtaUpdateActivity::render(RenderLock&&) {
     const int hintY = top + height + metrics.verticalSpacing;
     const Rect hintBounds{metrics.contentSidePadding, hintY, pageWidth - metrics.contentSidePadding * 2,
                           pageHeight - hintY};
-    UITheme::drawCenteredWrappedText(renderer, hintBounds, UI_10_FONT_ID, tr(STR_POWER_ON_HINT), 3, true,
+    UITheme::drawCenteredWrappedText(renderer, hintBounds, UI_10_FONT_ID, tr(STR_RESTARTING_HINT), 3, true,
                                      EpdFontFamily::REGULAR, UITheme::TextVerticalAlignment::TOP);
   }
 
