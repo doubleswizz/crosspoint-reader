@@ -1,5 +1,6 @@
 #include "SettingsListActivity.h"
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -9,6 +10,7 @@
 
 #include "BookOrbitSettingsActivity.h"
 #include "MappedInputManager.h"
+#include "OtaUpdateActivity.h"
 #include "SettingsActivity.h"
 #include "SilentRestart.h"
 #include "components/UITheme.h"
@@ -26,7 +28,9 @@ constexpr const freeink::Icon* SECTION_ICONS[SETTINGS_SECTION_COUNT] = {
 
 SettingsListActivity::SettingsListActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                            const SettingsSection openSection)
-    : UiListActivity("SettingsList", renderer, mappedInput), pendingSection(openSection) {}
+    : UiListActivity("SettingsList", renderer, mappedInput),
+      pendingSection(openSection),
+      rowCount_(BoardConfig::isPicco() ? BOOKORBIT_ROW_INDEX + 1 : UPDATE_ROW_INDEX + 1) {}
 
 void SettingsListActivity::onEnter() {
   UiListActivity::onEnter();
@@ -61,6 +65,15 @@ void SettingsListActivity::rebuildRows() {
   boItem.label = tr(STR_BOOKORBIT);
   boItem.icon = fui::bitmapFromIcon(icon_book_open_32);
   boItem.actionValue = static_cast<int16_t>(BOOKORBIT_ROW_INDEX);
+  size_t count = BOOKORBIT_ROW_INDEX + 1;
+  if (!BoardConfig::isPicco()) {
+    auto& updateItem = rowItems_[UPDATE_ROW_INDEX];
+    updateItem.label = tr(STR_UPDATE);
+    updateItem.icon = fui::bitmapFromIcon(icon_download_32);
+    updateItem.actionValue = static_cast<int16_t>(UPDATE_ROW_INDEX);
+    count = UPDATE_ROW_INDEX + 1;
+  }
+  rowCount_ = count;
 }
 
 void SettingsListActivity::buildScreen(UiScreen& screen) {
@@ -72,7 +85,7 @@ void SettingsListActivity::buildScreen(UiScreen& screen) {
 
   fui::ListProps props;
   props.items = rowItems_.data();
-  props.count = static_cast<uint16_t>(rowItems_.size());
+  props.count = static_cast<uint16_t>(rowCount_);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   // Rows are as tall as a label plus a small second line, giving the icons air.
@@ -90,17 +103,23 @@ void SettingsListActivity::activateIndex(const int index) {
   // unrelated element on return.
   app.clearTapFlash();
   if (index == static_cast<int>(BOOKORBIT_ROW_INDEX)) {
-    openBookOrbitSettings();
+    launchRootActivity(BOOKORBIT_ROW_INDEX, makeUniqueNoThrow<BookOrbitSettingsActivity>(renderer, mappedInput),
+                       "BookOrbitSettingsActivity");
+    return;
+  }
+  if (!BoardConfig::isPicco() && index == static_cast<int>(UPDATE_ROW_INDEX)) {
+    launchRootActivity(UPDATE_ROW_INDEX, makeUniqueNoThrow<OtaUpdateActivity>(renderer, mappedInput),
+                       "OtaUpdateActivity");
     return;
   }
   openSection(static_cast<SettingsSection>(index));
 }
 
-void SettingsListActivity::openBookOrbitSettings() {
-  nav.selected = static_cast<int>(BOOKORBIT_ROW_INDEX);
-  auto activity = makeUniqueNoThrow<BookOrbitSettingsActivity>(renderer, mappedInput);
+void SettingsListActivity::launchRootActivity(const size_t rowIndex, std::unique_ptr<Activity> activity,
+                                              const char* activityName) {
+  nav.selected = static_cast<int>(rowIndex);
   if (!activity) {
-    LOG_ERR("SETTINGS", "OOM: BookOrbitSettingsActivity");
+    LOG_ERR("SETTINGS", "OOM: %s", activityName);
     return;
   }
   startActivityForResult(std::move(activity), [this](const ActivityResult&) {

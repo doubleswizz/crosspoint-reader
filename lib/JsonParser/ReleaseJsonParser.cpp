@@ -17,11 +17,16 @@ ReleaseJsonParser::ReleaseJsonParser()
     : parser(JsonCallbacks{this, sOnKey, sOnString, sOnNumber, sOnBool, sOnNull, sOnObjectStart, sOnObjectEnd,
                            sOnArrayStart, sOnArrayEnd}) {
   safeCopy(firmwareAssetName, sizeof(firmwareAssetName), "firmware.bin", sizeof("firmware.bin") - 1);
+  fallbackFirmwareAssetName[0] = '\0';
   reset();
 }
 
 void ReleaseJsonParser::setFirmwareAssetName(const char* name) {
   safeCopy(firmwareAssetName, sizeof(firmwareAssetName), name, strlen(name));
+}
+
+void ReleaseJsonParser::setFallbackFirmwareAssetName(const char* name) {
+  safeCopy(fallbackFirmwareAssetName, sizeof(fallbackFirmwareAssetName), name, strlen(name));
 }
 
 void ReleaseJsonParser::reset() {
@@ -35,6 +40,7 @@ void ReleaseJsonParser::reset() {
   firmwareSize = 0;
   tagFound = false;
   firmwareFound = false;
+  primaryFirmwareFound = false;
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';
   currentAssetSize = 0;
@@ -49,10 +55,16 @@ const char* ReleaseJsonParser::getFirmwareUrl() const { return firmwareUrl; }
 size_t ReleaseJsonParser::getFirmwareSize() const { return firmwareSize; }
 
 void ReleaseJsonParser::commitAsset() {
-  if (strcmp(currentAssetName, firmwareAssetName) == 0) {
+  const bool matchedPrimary = firmwareAssetName[0] != '\0' && strcmp(currentAssetName, firmwareAssetName) == 0;
+  const bool matchedFallback = !primaryFirmwareFound && fallbackFirmwareAssetName[0] != '\0' &&
+                               strcmp(currentAssetName, fallbackFirmwareAssetName) == 0;
+  if (matchedPrimary || matchedFallback) {
     memcpy(firmwareUrl, currentAssetUrl, sizeof(firmwareUrl));
     firmwareSize = currentAssetSize;
     firmwareFound = true;
+    if (matchedPrimary) {
+      primaryFirmwareFound = true;
+    }
   }
   currentAssetName[0] = '\0';
   currentAssetUrl[0] = '\0';

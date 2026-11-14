@@ -18,8 +18,12 @@
 #include "FirmwareBoardTag.h"
 #include "FirmwareFlasher.h"
 
+#ifndef OTA_RELEASE_URL
+#define OTA_RELEASE_URL "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest"
+#endif
+
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+constexpr char latestReleaseUrl[] = OTA_RELEASE_URL;
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
@@ -41,6 +45,10 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
   // Each board updates from crosspoint-<version>-<device>.bin. The combined
   // C3 image uses x3-x4; other asset suffixes match their firmware board tag.
   const bool isX4 = board_tag::boardNameLen() == 2 && memcmp(board_tag::boardName(), "x4", 2) == 0;
+  const bool isX4Pro = board_tag::boardNameLen() == 5 && memcmp(board_tag::boardName(), "x4pro", 5) == 0;
+  if (isX4Pro) {
+    releaseParser.setFallbackFirmwareAssetName("x4pro-bobbi-firmware.bin");
+  }
   char assetSuffix[20] = "-x3-x4";
   if (!isX4) {
     snprintf(assetSuffix, sizeof(assetSuffix), "-%.*s", static_cast<int>(board_tag::boardNameLen()),
@@ -96,14 +104,24 @@ bool OtaUpdater::isUpdateNewer() const {
     return false;
   }
 
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
+  int currentMajor = 0, currentMinor = 0, currentPatch = 0;
+  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
 
   const auto currentVersion = CROSSPOINT_VERSION;
+  const char* latestVerStr = latestVersion.c_str();
+  if (latestVerStr[0] == 'v' || latestVerStr[0] == 'V') {
+    latestVerStr++;
+  }
+  const char* currentVerStr = currentVersion;
+  if (currentVerStr[0] == 'v' || currentVerStr[0] == 'V') {
+    currentVerStr++;
+  }
 
   // semantic version check (only match on 3 segments)
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
+  if (sscanf(latestVerStr, "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch) < 1 ||
+      sscanf(currentVerStr, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch) < 1) {
+    return false;
+  }
 
   /*
    * Compare major versions.

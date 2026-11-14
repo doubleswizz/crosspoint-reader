@@ -17,6 +17,8 @@ class ReleaseJsonParser {
 
   // Release-asset filename to match (default "firmware.bin").
   void setFirmwareAssetName(const char* name);
+  // Optional fallback filename accepted only when the primary name does not match.
+  void setFallbackFirmwareAssetName(const char* name);
 
   bool foundTag() const;
   bool foundFirmware() const;
@@ -64,10 +66,12 @@ class ReleaseJsonParser {
   size_t firmwareSize;
   bool tagFound;
   bool firmwareFound;
+  bool primaryFirmwareFound;
 
   char currentAssetName[48];
   char currentAssetUrl[512];
   size_t currentAssetSize;
 
   char firmwareAssetName[48];
+  char fallbackFirmwareAssetName[48];
 };

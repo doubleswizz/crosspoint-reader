@@ -597,6 +597,62 @@ TEST(ReleaseJsonParser, ConfiguredFirmwareNameRejectsDifferentVersion) {
   EXPECT_FALSE(p.foundFirmware());
 }
 
+TEST(ReleaseJsonParser, FallbackMatchesWhenPrimaryAbsent) {
+  const char* json = R"({
+      "tag_name": "v2.0.1",
+      "assets": [
+        {"name": "x4pro-bobbi-firmware.bin", "browser_download_url": "https://fallback", "size": 250}
+      ]
+    })";
+
+  ReleaseJsonParser p;
+  p.setFirmwareAssetName("crosspoint-v2.0.1-x4pro.bin");
+  p.setFallbackFirmwareAssetName("x4pro-bobbi-firmware.bin");
+  p.feed(json, strlen(json));
+
+  EXPECT_TRUE(p.foundFirmware());
+  EXPECT_STREQ(p.getFirmwareUrl(), "https://fallback");
+  EXPECT_EQ(p.getFirmwareSize(), 250u);
+}
+
+TEST(ReleaseJsonParser, PrimaryOverridesFallbackEvenIfLaterInAssets) {
+  const char* json = R"({
+      "tag_name": "v2.0.1",
+      "assets": [
+        {"name": "x4pro-bobbi-firmware.bin", "browser_download_url": "https://fallback", "size": 250},
+        {"name": "crosspoint-v2.0.1-x4pro.bin", "browser_download_url": "https://primary", "size": 300}
+      ]
+    })";
+
+  ReleaseJsonParser p;
+  p.setFirmwareAssetName("crosspoint-v2.0.1-x4pro.bin");
+  p.setFallbackFirmwareAssetName("x4pro-bobbi-firmware.bin");
+  p.feed(json, strlen(json));
+
+  EXPECT_TRUE(p.foundFirmware());
+  EXPECT_STREQ(p.getFirmwareUrl(), "https://primary");
+  EXPECT_EQ(p.getFirmwareSize(), 300u);
+}
+
+TEST(ReleaseJsonParser, FallbackDoesNotOverridePrimary) {
+  const char* json = R"({
+      "tag_name": "v2.0.1",
+      "assets": [
+        {"name": "crosspoint-v2.0.1-x4pro.bin", "browser_download_url": "https://primary", "size": 300},
+        {"name": "x4pro-bobbi-firmware.bin", "browser_download_url": "https://fallback", "size": 250}
+      ]
+    })";
+
+  ReleaseJsonParser p;
+  p.setFirmwareAssetName("crosspoint-v2.0.1-x4pro.bin");
+  p.setFallbackFirmwareAssetName("x4pro-bobbi-firmware.bin");
+  p.feed(json, strlen(json));
+
+  EXPECT_TRUE(p.foundFirmware());
+  EXPECT_STREQ(p.getFirmwareUrl(), "https://primary");
+  EXPECT_EQ(p.getFirmwareSize(), 300u);
+}
+
 TEST(ReleaseJsonParser, LargeSize) {
   // 16MB firmware (maximum flash size)
   const char* json =
