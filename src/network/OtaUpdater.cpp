@@ -71,7 +71,11 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return true;
   });
   if (!ok) {
-    LOG_ERR("OTA", "Release check fetch failed");
+    if (HttpDownloader::lastStatus() == 404) {
+      LOG_INF("OTA", "No published releases found (HTTP 404)");
+      return NO_UPDATE;
+    }
+    LOG_ERR("OTA", "Release check fetch failed (status=%d)", HttpDownloader::lastStatus());
     return HTTP_ERROR;
   }
 
