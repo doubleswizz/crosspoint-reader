@@ -57,6 +57,17 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
   }
 }
 
+struct FrontPageTurnButtons {
+  MappedInputManager::Button previous;
+  MappedInputManager::Button next;
+};
+
+inline FrontPageTurnButtons getFrontPageTurnButtons(const MappedInputManager& input) {
+  const bool swapped = input.isNavDirectionSwapped();
+  return {swapped ? MappedInputManager::Button::Right : MappedInputManager::Button::Left,
+          swapped ? MappedInputManager::Button::Left : MappedInputManager::Button::Right};
+}
+
 struct PageTurnResult {
   bool prev;
   bool next;
@@ -67,20 +78,18 @@ inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
   const bool usePress = SETTINGS.longPressButtonBehavior == SETTINGS.OFF;
   const bool tiltNext = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedForward();
   const bool tiltPrev = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedBack();
-  const bool swapFront = input.isNavDirectionSwapped();
-  const auto prevButton = swapFront ? MappedInputManager::Button::Right : MappedInputManager::Button::Left;
-  const auto nextButton = swapFront ? MappedInputManager::Button::Left : MappedInputManager::Button::Right;
+  const auto frontButtons = getFrontPageTurnButtons(input);
   const auto pageButtonTriggered = [&](const MappedInputManager::Button button) {
     if (usePress) return input.wasPressed(button);
     return input.wasLongPressed(button, SKIP_HOLD_MS) || input.wasReleased(button);
   };
-  const bool prev =
-      tiltPrev || (pageButtonTriggered(MappedInputManager::Button::PageBack) || pageButtonTriggered(prevButton));
-  const bool powerTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
-                         input.wasReleased(MappedInputManager::Button::Power);
+  const bool prev = tiltPrev || (pageButtonTriggered(MappedInputManager::Button::PageBack) ||
+                                 pageButtonTriggered(frontButtons.previous));
+  const bool powerTurn =
+      SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN && input.wasPowerSingleClick();
   const bool next = input.homeButtonAction() == HomeButtonAction::NextPage || tiltNext ||
                     pageButtonTriggered(MappedInputManager::Button::PageForward) || powerTurn ||
-                    pageButtonTriggered(nextButton);
+                    pageButtonTriggered(frontButtons.next);
   return {prev, next, tiltPrev || tiltNext};
 }
 
@@ -241,6 +250,14 @@ void renderAntiAliased(GfxRenderer& renderer, RenderFn&& renderFn) {
   renderer.restoreBwBuffer();
 }
 
+// Book page presentation: lets the panel use its reading waveform.
+struct ReaderRefreshScope {
+  ReaderRefreshScope() { display.setReaderRefresh(true); }
+  ~ReaderRefreshScope() { display.setReaderRefresh(false); }
+  ReaderRefreshScope(const ReaderRefreshScope&) = delete;
+  ReaderRefreshScope& operator=(const ReaderRefreshScope&) = delete;
+};
+
 struct BackNavCallback {
   void* ctx;
   void (*fn)(void*);
@@ -255,6 +272,11 @@ struct BackNavCallback {
 // - with backShortToFileBrowser: go to file browser.
 inline bool handleBackNavigation(const MappedInputManager& mappedInput, ActivityManager& activityManager,
                                  const char* filePath, BackNavCallback goHome) {
+  if (mappedInput.homeButtonAction() == HomeButtonAction::FileBrowser) {
+    activityManager.goToFileBrowser(filePath);
+    return true;
+  }
+
   // The reading surface deliberately has no left-edge swipe-to-exit path: in
   // swipe page-turn mode a right swipe must page back instead. Home remains
   // available through the board's dedicated Home gesture/key. Back swipes stay
