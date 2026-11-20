@@ -107,6 +107,7 @@ int BookOrbitActivity::listCount() const {
 
 bool BookOrbitActivity::isPaginatedView() const {
   return currentView == ShelfView::ALL_BOOKS || currentView == ShelfView::LIBRARY_BOOKS ||
+         currentView == ShelfView::COLLECTION_BOOKS || currentView == ShelfView::SMART_SCOPE_BOOKS ||
          currentView == ShelfView::SEARCH_RESULTS || currentView == ShelfView::SERIES_BOOKS;
 }
 
@@ -124,6 +125,10 @@ void BookOrbitActivity::startBrowse() {
     loadRootMenu();
   } else if (currentView == ShelfView::LIBRARIES_LIST) {
     loadLibrariesList();
+  } else if (currentView == ShelfView::COLLECTIONS_LIST) {
+    loadCollectionsList();
+  } else if (currentView == ShelfView::SMART_SCOPES_LIST) {
+    loadSmartScopesList();
   } else {
     loadShelf(currentView, currentPage);
   }
@@ -146,7 +151,21 @@ void BookOrbitActivity::onBackButton() {
       loadShelf(parentBeforeSeriesView, parentPageBeforeSeries);
       return;
     }
-    if (currentView == ShelfView::LIBRARY_BOOKS) {
+    if (currentView == ShelfView::COLLECTION_BOOKS) {
+      loadCollectionsList();
+      return;
+    }
+    if (currentView == ShelfView::SMART_SCOPE_BOOKS) {
+      loadSmartScopesList();
+      return;
+    }
+    if (currentView == ShelfView::LIBRARY_BOOKS || currentView == ShelfView::COLLECTIONS_LIST ||
+        currentView == ShelfView::SMART_SCOPES_LIST) {
+      loadLibrariesList();
+      return;
+    }
+    if ((currentView == ShelfView::RECENTLY_ADDED || currentView == ShelfView::WANT_TO_READ) &&
+        entryMode == EntryMode::LIBRARIES) {
       loadLibrariesList();
       return;
     }
@@ -320,25 +339,27 @@ void BookOrbitActivity::loadRootMenu() {
   requestUpdate();
 }
 
-void BookOrbitActivity::loadLibrariesList() {
-  currentView = ShelfView::LIBRARIES_LIST;
+void BookOrbitActivity::loadSectionList(const ShelfView view, const char* title, const char* loadingMsg,
+                                        const char* errFallback, std::vector<BookOrbitLibrary>& target,
+                                        bool (*fetcher)(std::vector<BookOrbitLibrary>&, std::string&)) {
+  currentView = view;
   currentPage = 0;
   totalBooks = 0;
-  headerTitleStr = "Libraries";
+  headerTitleStr = title;
 
-  if (libraries.empty()) {
+  if (target.empty()) {
     {
       RenderLock lock(*this);
       state = State::LOADING;
-      statusMessage = "Loading libraries...";
+      statusMessage = loadingMsg;
     }
     requestUpdate(true);
 
     std::string err;
-    if (!BookOrbitClient::fetchLibraries(libraries, err)) {
+    if (!fetcher(target, err)) {
       {
         RenderLock lock(*this);
-        errorMessage = err.empty() ? "Failed to load libraries" : err;
+        errorMessage = err.empty() ? errFallback : err;
         state = State::ERROR;
       }
       requestUpdate();
@@ -354,6 +375,21 @@ void BookOrbitActivity::loadLibrariesList() {
     nav.reset();
   }
   requestUpdate();
+}
+
+void BookOrbitActivity::loadLibrariesList() {
+  loadSectionList(ShelfView::LIBRARIES_LIST, "Libraries", "Loading libraries...", "Failed to load libraries", libraries,
+                  BookOrbitClient::fetchLibraries);
+}
+
+void BookOrbitActivity::loadCollectionsList() {
+  loadSectionList(ShelfView::COLLECTIONS_LIST, "Collections", "Loading collections...", "Failed to load collections",
+                  collections, BookOrbitClient::fetchCollections);
+}
+
+void BookOrbitActivity::loadSmartScopesList() {
+  loadSectionList(ShelfView::SMART_SCOPES_LIST, "SmartScopes", "Loading SmartScopes...", "Failed to load SmartScopes",
+                  smartScopes, BookOrbitClient::fetchSmartScopes);
 }
 
 bool BookOrbitActivity::tryLoadLocalContinueReading() {
@@ -386,6 +422,12 @@ void BookOrbitActivity::loadShelf(const ShelfView view, const int page) {
     case ShelfView::LIBRARIES_LIST:
       loadLibrariesList();
       return;
+    case ShelfView::COLLECTIONS_LIST:
+      loadCollectionsList();
+      return;
+    case ShelfView::SMART_SCOPES_LIST:
+      loadSmartScopesList();
+      return;
     case ShelfView::CURRENTLY_READING:
       headerTitleStr = "Continue Reading";
       break;
@@ -400,6 +442,12 @@ void BookOrbitActivity::loadShelf(const ShelfView view, const int page) {
       break;
     case ShelfView::LIBRARY_BOOKS:
       headerTitleStr = activeLibraryName.empty() ? "Library" : activeLibraryName;
+      break;
+    case ShelfView::COLLECTION_BOOKS:
+      headerTitleStr = activeCollectionName.empty() ? "Collection" : activeCollectionName;
+      break;
+    case ShelfView::SMART_SCOPE_BOOKS:
+      headerTitleStr = activeSmartScopeName.empty() ? "SmartScope" : activeSmartScopeName;
       break;
     case ShelfView::SEARCH_RESULTS:
       headerTitleStr = "\"" + activeSearchQuery + "\"";
@@ -443,6 +491,12 @@ void BookOrbitActivity::loadShelf(const ShelfView view, const int page) {
     case ShelfView::LIBRARY_BOOKS:
       shelfQuery = "library:" + std::to_string(activeLibraryId);
       break;
+    case ShelfView::COLLECTION_BOOKS:
+      shelfQuery = "collection:" + std::to_string(activeCollectionId);
+      break;
+    case ShelfView::SMART_SCOPE_BOOKS:
+      shelfQuery = "smartscope:" + std::to_string(activeSmartScopeId);
+      break;
     case ShelfView::SEARCH_RESULTS:
       shelfQuery = "search:" + activeSearchQuery;
       break;
@@ -451,6 +505,8 @@ void BookOrbitActivity::loadShelf(const ShelfView view, const int page) {
       break;
     case ShelfView::ROOT_MENU:
     case ShelfView::LIBRARIES_LIST:
+    case ShelfView::COLLECTIONS_LIST:
+    case ShelfView::SMART_SCOPES_LIST:
       break;
   }
 
@@ -517,15 +573,27 @@ void BookOrbitActivity::rebuildRowItems() {
     rowItems.push_back(item);
   };
 
-  if (currentView == ShelfView::LIBRARIES_LIST) {
-    rowItems.reserve(libraries.size());
-    rowLabels.reserve(libraries.size());
-    rowSubtitles.reserve(libraries.size());
-    rowValues.reserve(libraries.size());
+  if (currentView == ShelfView::LIBRARIES_LIST || currentView == ShelfView::COLLECTIONS_LIST ||
+      currentView == ShelfView::SMART_SCOPES_LIST) {
+    const auto& items = (currentView == ShelfView::LIBRARIES_LIST)
+                            ? libraries
+                            : (currentView == ShelfView::COLLECTIONS_LIST ? collections : smartScopes);
+    const size_t extraRows = (currentView == ShelfView::LIBRARIES_LIST) ? 4 : 0;
+    rowItems.reserve(items.size() + extraRows);
+    rowLabels.reserve(items.size() + extraRows);
+    rowSubtitles.reserve(items.size() + extraRows);
+    rowValues.reserve(items.size() + extraRows);
 
-    for (const auto& lib : libraries) {
-      std::string subtitle = std::to_string(lib.bookCount) + (lib.bookCount == 1 ? " book" : " books");
-      addRow(lib.name, std::move(subtitle), ">", fui::bitmapFromIcon(icon_library_32));
+    const freeink::Icon& listIcon = (currentView == ShelfView::COLLECTIONS_LIST) ? icon_folder_32 : icon_library_32;
+    for (const auto& entry : items) {
+      std::string subtitle = std::to_string(entry.bookCount) + (entry.bookCount == 1 ? " book" : " books");
+      addRow(entry.name, std::move(subtitle), ">", fui::bitmapFromIcon(listIcon));
+    }
+    if (currentView == ShelfView::LIBRARIES_LIST) {
+      addRow("Collections", "Browse your collections", ">", fui::bitmapFromIcon(icon_folder_32));
+      addRow("SmartScopes", "Browse smart scopes", ">", fui::bitmapFromIcon(icon_library_32));
+      addRow("Recently Added", "Latest additions", ">", fui::bitmapFromIcon(icon_book_32));
+      addRow("Want to Read", "Saved to read later", ">", fui::bitmapFromIcon(icon_book_open_32));
     }
     return;
   }
@@ -749,7 +817,14 @@ void BookOrbitActivity::buildBrowsingScreen(UiScreen& screen) {
   }
 
   if (rowItems.empty()) {
-    const char* emptyMsg = (currentView == ShelfView::LIBRARIES_LIST) ? "No libraries found" : "No EPUB books found";
+    const char* emptyMsg = "No EPUB books found";
+    if (currentView == ShelfView::LIBRARIES_LIST) {
+      emptyMsg = "No libraries found";
+    } else if (currentView == ShelfView::COLLECTIONS_LIST) {
+      emptyMsg = "No collections found";
+    } else if (currentView == ShelfView::SMART_SCOPES_LIST) {
+      emptyMsg = "No SmartScopes found";
+    }
     screen.centeredText(emptyMsg, screen.theme().bodyText);
     return;
   }
@@ -790,10 +865,39 @@ void BookOrbitActivity::activateIndex(int index) {
   }
 
   if (currentView == ShelfView::LIBRARIES_LIST) {
-    if (index >= 0 && static_cast<size_t>(index) < libraries.size()) {
-      activeLibraryId = libraries[index].id;
-      activeLibraryName = libraries[index].name;
+    const size_t idx = static_cast<size_t>(index);
+    if (idx < libraries.size()) {
+      activeLibraryId = libraries[idx].id;
+      activeLibraryName = libraries[idx].name;
       loadShelf(ShelfView::LIBRARY_BOOKS, 0);
+    } else if (idx == libraries.size()) {
+      loadCollectionsList();
+    } else if (idx == libraries.size() + 1) {
+      loadSmartScopesList();
+    } else if (idx == libraries.size() + 2) {
+      loadShelf(ShelfView::RECENTLY_ADDED, 0);
+    } else if (idx == libraries.size() + 3) {
+      loadShelf(ShelfView::WANT_TO_READ, 0);
+    }
+    return;
+  }
+
+  if (currentView == ShelfView::COLLECTIONS_LIST) {
+    const size_t idx = static_cast<size_t>(index);
+    if (idx < collections.size()) {
+      activeCollectionId = collections[idx].id;
+      activeCollectionName = collections[idx].name;
+      loadShelf(ShelfView::COLLECTION_BOOKS, 0);
+    }
+    return;
+  }
+
+  if (currentView == ShelfView::SMART_SCOPES_LIST) {
+    const size_t idx = static_cast<size_t>(index);
+    if (idx < smartScopes.size()) {
+      activeSmartScopeId = smartScopes[idx].id;
+      activeSmartScopeName = smartScopes[idx].name;
+      loadShelf(ShelfView::SMART_SCOPE_BOOKS, 0);
     }
     return;
   }
@@ -991,8 +1095,10 @@ void BookOrbitActivity::drawFooter() {
   MappedInputManager::Labels labels;
   switch (state) {
     case State::BROWSING: {
-      const char* confirmLabel =
-          (currentView == ShelfView::ROOT_MENU || currentView == ShelfView::LIBRARIES_LIST) ? "Open" : "Select";
+      const bool isSectionMenu =
+          (currentView == ShelfView::ROOT_MENU || currentView == ShelfView::LIBRARIES_LIST ||
+           currentView == ShelfView::COLLECTIONS_LIST || currentView == ShelfView::SMART_SCOPES_LIST);
+      const char* confirmLabel = isSectionMenu ? "Open" : "Select";
       const char* upLabel = (hasSearch() && nav.selected == 0) ? "Search" : "Up";
       labels = mappedInput.mapLabels("Back", confirmLabel, upLabel, "Down");
       break;

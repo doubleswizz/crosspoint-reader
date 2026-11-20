@@ -45,11 +45,14 @@ class BookOrbitClient {
   // Validates connection and credentials against BookOrbit server (/api/v1/auth/me)
   static bool testConnection(std::string& outErrorMessage);
 
-  // Fetches available libraries on the BookOrbit server
+  // Fetches available libraries, collections, or SmartScopes on the BookOrbit server
   static bool fetchLibraries(std::vector<BookOrbitLibrary>& outLibraries, std::string& outErrorMessage);
+  static bool fetchCollections(std::vector<BookOrbitLibrary>& outCollections, std::string& outErrorMessage);
+  static bool fetchSmartScopes(std::vector<BookOrbitLibrary>& outScopes, std::string& outErrorMessage);
 
-  // Fetches reading list / books from a shelf, library, search, or series ("currently-reading", "want-to-read",
-  // "recently-added", "library:<id>", "search:<q>", "series:<id>", or "")
+  // Fetches reading list / books from a shelf, library, collection, smartscope, search, or series ("currently-reading",
+  // "want-to-read", "recently-added", "library:<id>", "collection:<id>", "smartscope:<id>", "search:<q>",
+  // "series:<id>", or "")
   static bool fetchBooks(const std::string& shelfOrEndpoint, std::vector<BookOrbitBook>& outBooks,
                          std::string& outErrorMessage, int page = 0, int pageSize = 25, int* outTotal = nullptr);
 
@@ -63,6 +66,17 @@ class BookOrbitClient {
   // Syncs reading progress back to BookOrbit
   static bool syncReadingProgress(const std::string& fileId, float progressPercent, int currentPosition = 0,
                                   int durationSeconds = 0);
+
+  // Syncs a completed or active-checkpoint reading session to BookOrbit Reading Log / Insights
+  static bool syncReadingSession(const std::string& fileId, int64_t startEpoch, int64_t endEpoch,
+                                 uint32_t durationSeconds, float progressDeltaPct, float endProgressPct);
+
+  // Updates a book's read status (e.g. "finished", "reading", "unread") on BookOrbit
+  static bool syncBookReadStatus(const std::string& bookId, const char* status);
+
+  // Queues an offline-safe reading session in the book's .meta.json sidecar for the next sync
+  static void recordReadingSession(const std::string& bookPath, int64_t startEpoch, int64_t endEpoch,
+                                   uint32_t durationSeconds, uint16_t startProgressBp, uint16_t endProgressBp);
 
   // Checks if a book exists on local storage
   static bool checkLocalAvailability(BookOrbitBook& book);

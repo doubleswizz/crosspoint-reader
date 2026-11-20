@@ -80,6 +80,13 @@ void ReaderActivity::maybePeriodicBookOrbitSync() {
     return;
   }
 
+  // Snapshot active session before burst sync (BookOrbit merges upward on the same sessionId).
+  if (readerSession.isEmitWorthy()) {
+    BookOrbitClient::recordReadingSession(bookPath, readerSession.startTime(), readerSession.endTime(),
+                                          readerSession.durationSeconds(), readerSession.startProgressBp(),
+                                          readerSession.endProgressBp());
+  }
+
   const float ratio = static_cast<float>(getProgressBasisPoints()) / 10000.0f;
   const bool ok = BookOrbitClient::pushProgressBurst(bookPath, ratio);
   const unsigned long done = millis();
@@ -219,7 +226,18 @@ void ReaderActivity::prepareForSleep() {
 }
 
 void ReaderActivity::flushReaderSession() {
-  if (!readerSession.isEmitWorthy() || !pluginevents::anySubscriber(pluginevents::Event::ReaderSession)) {
+  if (!readerSession.isEmitWorthy()) {
+    readerSession.reset();
+    return;
+  }
+
+  if (BOOKORBIT_STORE.isEnabled()) {
+    BookOrbitClient::recordReadingSession(bookPath, readerSession.startTime(), readerSession.endTime(),
+                                          readerSession.durationSeconds(), readerSession.startProgressBp(),
+                                          readerSession.endProgressBp());
+  }
+
+  if (!pluginevents::anySubscriber(pluginevents::Event::ReaderSession)) {
     readerSession.reset();
     return;
   }

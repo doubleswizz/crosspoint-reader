@@ -5,11 +5,15 @@
 #include <HalPowerManager.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <TrustedTime.h>
 #include <WiFi.h>
 #include <esp_attr.h>
 #include <esp_heap_caps.h>
 
+#include <algorithm>
+#include <cstdio>
 #include <cstdlib>
+#include <ctime>
 
 #include "CrossPointSettings.h"
 #include "WifiCredentialStore.h"
@@ -119,6 +123,130 @@ void parseBookArray(JsonArrayConst array, std::vector<BookOrbitBook>& outBooks) 
     BookOrbitClient::checkLocalAvailability(book);
     outBooks.push_back(std::move(book));
   }
+}
+
+constexpr size_t META_FILE_MAX_BYTES = 4096;
+constexpr size_t MAX_PENDING_SESSIONS = 12;
+
+bool formatIsoUtc(const int64_t epochSec, char* buf, const size_t bufSize) {
+  if (epochSec <= 0) return false;
+  time_t t = static_cast<time_t>(epochSec);
+  struct tm utcTm{};
+  if (!gmtime_r(&t, &utcTm)) return false;
+  snprintf(buf, bufSize, "%04d-%02d-%02dT%02d:%02d:%02dZ", utcTm.tm_year + 1900, utcTm.tm_mon + 1, utcTm.tm_mday,
+           utcTm.tm_hour, utcTm.tm_min, utcTm.tm_sec);
+  return true;
+}
+
+bool sendJsonWithAuthRetry(const char* method, const std::string& url, const std::string& jsonBody,
+                           std::string& outResponse, int* outStatus = nullptr) {
+  std::string token;
+  std::string errMsg;
+  if (!BookOrbitClient::ensureAuthenticated(token, errMsg)) {
+    if (outStatus) *outStatus = 0;
+    return false;
+  }
+
+  auto dispatch = [&](const std::string& bearer, int& status) {
+    if (strcmp(method, "PUT") == 0) {
+      return HttpDownloader::putJson(url, jsonBody, outResponse, bearer, &status);
+    }
+    if (strcmp(method, "PATCH") == 0) {
+      return HttpDownloader::patchJson(url, jsonBody, outResponse, bearer, &status);
+    }
+    return HttpDownloader::postJson(url, jsonBody, outResponse, bearer, &status);
+  };
+
+  int status = 0;
+  bool ok = dispatch(token, status);
+  if (status == 401 && BookOrbitClient::ensureAuthenticated(token, errMsg, true)) {
+    ok = dispatch(token, status);
+  }
+  if (outStatus) *outStatus = status;
+  return ok;
+}
+
+void collectMetaFiles(const std::string& downloadDir, std::vector<std::string>& outMetaFiles) {
+  outMetaFiles.clear();
+  auto dir = Storage.open(downloadDir.c_str());
+  if (!dir || !dir.isDirectory()) return;
+
+  dir.rewindDirectory();
+  char nameBuf[128];
+  for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+    if (entry.isDirectory()) continue;
+    entry.getName(nameBuf, sizeof(nameBuf));
+    const std::string name(nameBuf);
+    if (name.length() > 10 && name.rfind(".meta.json") == name.length() - 10) {
+      outMetaFiles.push_back(downloadDir + "/" + name);
+    }
+  }
+}
+
+bool fetchNamedList(const char* endpoint, const char* label, const bool skipEmpty,
+                    std::vector<BookOrbitLibrary>& outItems, std::string& outErrorMessage) {
+  outItems.clear();
+
+  std::string token;
+  if (!BookOrbitClient::ensureAuthenticated(token, outErrorMessage)) {
+    return false;
+  }
+
+  const std::string url = cleanBaseUrl(BOOKORBIT_STORE.getServerUrl()) + endpoint;
+  auto doFetch = [&](const std::string& bearer, std::string& payload, int& status) {
+    payload.clear();
+    payload.reserve(4096);
+    HttpDownloader::FetchOptions opts;
+    opts.bearer = bearer;
+    opts.statusOut = &status;
+    return HttpDownloader::fetchUrl(
+        url,
+        [&payload](const uint8_t* data, size_t len) {
+          if (payload.size() + len <= 32768) {
+            payload.append(reinterpret_cast<const char*>(data), len);
+            return true;
+          }
+          return false;
+        },
+        opts);
+  };
+
+  int status = 0;
+  std::string jsonPayload;
+  bool ok = doFetch(token, jsonPayload, status);
+  if (status == 401 && BookOrbitClient::ensureAuthenticated(token, outErrorMessage, true)) {
+    ok = doFetch(token, jsonPayload, status);
+  }
+
+  if (!ok || status < 200 || status >= 300) {
+    outErrorMessage = std::string("Failed to load ") + label + " (HTTP " + std::to_string(status) + ")";
+    return false;
+  }
+
+  JsonDocument filter;
+  filter[0]["id"] = true;
+  filter[0]["name"] = true;
+  filter[0]["bookCount"] = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, jsonPayload, DeserializationOption::Filter(filter)) || !doc.is<JsonArray>()) {
+    outErrorMessage = std::string("Invalid ") + label + " response";
+    return false;
+  }
+
+  for (JsonObjectConst obj : doc.as<JsonArrayConst>()) {
+    BookOrbitLibrary item;
+    item.id = obj["id"] | 0;
+    item.name = obj["name"] | "";
+    item.bookCount = obj["bookCount"] | 0;
+    if (skipEmpty && obj["bookCount"].is<int>() && item.bookCount <= 0) {
+      continue;
+    }
+    if (item.id > 0 && !item.name.empty()) {
+      outItems.push_back(std::move(item));
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -238,58 +366,15 @@ bool BookOrbitClient::testConnection(std::string& outErrorMessage) {
 }
 
 bool BookOrbitClient::fetchLibraries(std::vector<BookOrbitLibrary>& outLibraries, std::string& outErrorMessage) {
-  outLibraries.clear();
+  return fetchNamedList("/api/v1/libraries", "libraries", false, outLibraries, outErrorMessage);
+}
 
-  std::string token;
-  if (!ensureAuthenticated(token, outErrorMessage)) {
-    return false;
-  }
+bool BookOrbitClient::fetchCollections(std::vector<BookOrbitLibrary>& outCollections, std::string& outErrorMessage) {
+  return fetchNamedList("/api/v1/collections", "collections", true, outCollections, outErrorMessage);
+}
 
-  const std::string url = cleanBaseUrl(BOOKORBIT_STORE.getServerUrl()) + "/api/v1/libraries";
-  HttpDownloader::FetchOptions opts;
-  opts.bearer = token;
-  int status = 0;
-  opts.statusOut = &status;
-
-  std::string jsonPayload;
-  jsonPayload.reserve(4096);
-  const bool ok = HttpDownloader::fetchUrl(
-      url,
-      [&jsonPayload](const uint8_t* data, size_t len) {
-        if (jsonPayload.size() + len <= 16384) {
-          jsonPayload.append(reinterpret_cast<const char*>(data), len);
-          return true;
-        }
-        return false;
-      },
-      opts);
-
-  if (!ok || status < 200 || status >= 300) {
-    outErrorMessage = "Failed to load libraries (HTTP " + std::to_string(status) + ")";
-    return false;
-  }
-
-  JsonDocument filter;
-  filter[0]["id"] = true;
-  filter[0]["name"] = true;
-  filter[0]["bookCount"] = true;
-
-  JsonDocument doc;
-  if (deserializeJson(doc, jsonPayload, DeserializationOption::Filter(filter)) || !doc.is<JsonArray>()) {
-    outErrorMessage = "Invalid libraries response";
-    return false;
-  }
-
-  for (JsonObjectConst obj : doc.as<JsonArrayConst>()) {
-    BookOrbitLibrary lib;
-    lib.id = obj["id"] | 0;
-    lib.name = obj["name"] | "";
-    lib.bookCount = obj["bookCount"] | 0;
-    if (lib.id > 0 && !lib.name.empty()) {
-      outLibraries.push_back(std::move(lib));
-    }
-  }
-  return true;
+bool BookOrbitClient::fetchSmartScopes(std::vector<BookOrbitLibrary>& outScopes, std::string& outErrorMessage) {
+  return fetchNamedList("/api/v1/smart-scopes", "SmartScopes", true, outScopes, outErrorMessage);
 }
 
 bool BookOrbitClient::fetchCurrentlyReading(std::vector<BookOrbitBook>& outBooks, std::string& outErrorMessage) {
@@ -336,6 +421,28 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
     JsonObject sortObj = reqDoc["sort"].to<JsonArray>().add<JsonObject>();
     sortObj["field"] = "title";
     sortObj["dir"] = "asc";
+    reqDoc["pagination"]["page"] = page;
+    reqDoc["pagination"]["size"] = pageSize;
+    serializeJson(reqDoc, postBody);
+  } else if (shelfOrEndpoint.rfind("collection:", 0) == 0) {
+    const std::string colId = shelfOrEndpoint.substr(11);
+    url = baseUrl + "/api/v1/collections/" + colId + "/books/query";
+    JsonDocument reqDoc;
+    reqDoc["collapseSeries"] = true;
+    reqDoc["collapseLinked"] = true;
+    JsonObject sortObj = reqDoc["sort"].to<JsonArray>().add<JsonObject>();
+    sortObj["field"] = "collectionOrder";
+    sortObj["dir"] = "asc";
+    reqDoc["pagination"]["page"] = page;
+    reqDoc["pagination"]["size"] = pageSize;
+    serializeJson(reqDoc, postBody);
+  } else if (shelfOrEndpoint.rfind("smartscope:", 0) == 0) {
+    const std::string scopeId = shelfOrEndpoint.substr(11);
+    url = baseUrl + "/api/v1/smart-scopes/" + scopeId + "/books/query";
+    JsonDocument reqDoc;
+    reqDoc["collapseSeries"] = true;
+    reqDoc["collapseLinked"] = true;
+    reqDoc["sort"].to<JsonArray>();  // empty lets the SmartScope use its configured default sort
     reqDoc["pagination"]["page"] = page;
     reqDoc["pagination"]["size"] = pageSize;
     serializeJson(reqDoc, postBody);
@@ -581,7 +688,7 @@ bool BookOrbitClient::getBookMetadata(const std::string& bookPath, std::string& 
   if (!Storage.exists(metaPath.c_str())) return false;
 
   std::string fileContent;
-  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, fileContent)) return false;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), META_FILE_MAX_BYTES, fileContent)) return false;
 
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, fileContent);
@@ -599,13 +706,144 @@ bool BookOrbitClient::getBookMetadata(const std::string& bookPath, std::string& 
   return true;
 }
 
+void BookOrbitClient::recordReadingSession(const std::string& bookPath, const int64_t startEpoch,
+                                           const int64_t endEpoch, const uint32_t durationSeconds,
+                                           const uint16_t startProgressBp, const uint16_t endProgressBp) {
+  if (!BOOKORBIT_STORE.isEnabled() || startEpoch <= 0 || endEpoch <= startEpoch || durationSeconds < 10) return;
+
+  const std::string metaPath = bookPath + ".meta.json";
+  if (!Storage.exists(metaPath.c_str())) return;
+
+  std::string fileContent;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), META_FILE_MAX_BYTES, fileContent)) return;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, fileContent)) return;
+  if (jsonVariantToIdString(doc["bookorbit"]["fileId"]).empty()) return;
+
+  JsonArray sessions = doc["pendingSessions"].as<JsonArray>();
+  if (sessions.isNull()) {
+    sessions = doc["pendingSessions"].to<JsonArray>();
+  }
+
+  // Merge upward when the same reading session already exists (e.g., periodic checkpoint).
+  bool updatedExisting = false;
+  for (JsonObject entry : sessions) {
+    if ((entry["s"] | int64_t(0)) == startEpoch) {
+      const uint32_t prevDur = entry["d"] | uint32_t(0);
+      if (durationSeconds > prevDur) entry["d"] = durationSeconds;
+      if (endEpoch > (entry["e"] | int64_t(0))) entry["e"] = endEpoch;
+      entry["ep"] = std::max<uint16_t>(entry["ep"] | uint16_t(0), endProgressBp);
+      updatedExisting = true;
+      break;
+    }
+  }
+
+  if (!updatedExisting) {
+    while (sessions.size() >= MAX_PENDING_SESSIONS) {
+      sessions.remove(0);
+    }
+    JsonObject obj = sessions.add<JsonObject>();
+    obj["s"] = startEpoch;
+    obj["e"] = endEpoch;
+    obj["d"] = durationSeconds;
+    obj["sp"] = startProgressBp;
+    obj["ep"] = endProgressBp;
+  }
+
+  HalFile metaFile;
+  if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
+    serializeJson(doc, metaFile);
+    metaFile.close();
+  }
+}
+
+namespace {
+
+// Flushes pending progress, reading sessions, and finished status stored in one .meta.json sidecar.
+// Returns true if any network write succeeded.
+bool flushMetaFile(const std::string& metaPath, bool* outUpdatedFile = nullptr) {
+  if (outUpdatedFile) *outUpdatedFile = false;
+  std::string content;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), META_FILE_MAX_BYTES, content)) return false;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, content)) return false;
+
+  const std::string fileId = jsonVariantToIdString(doc["bookorbit"]["fileId"]);
+  if (fileId.empty()) return false;
+  const std::string bookId = jsonVariantToIdString(doc["bookorbit"]["bookId"]);
+
+  bool dirty = false;
+  bool anyPushed = false;
+
+  if (doc["pendingSync"] | false) {
+    const float progress = doc["progress"] | 0.0f;
+    LOG_INF("BKO", "Syncing pending progress %.2f for file %s", progress, fileId.c_str());
+    if (BookOrbitClient::syncReadingProgress(fileId, progress)) {
+      doc["pendingSync"] = false;
+      dirty = true;
+      anyPushed = true;
+    }
+  }
+
+  JsonArray sessions = doc["pendingSessions"].as<JsonArray>();
+  if (!sessions.isNull() && sessions.size() > 0) {
+    for (int i = static_cast<int>(sessions.size()) - 1; i >= 0; --i) {
+      JsonObjectConst entry = sessions[i];
+      const int64_t startEpoch = entry["s"] | int64_t(0);
+      const int64_t endEpoch = entry["e"] | int64_t(0);
+      const uint32_t dur = entry["d"] | uint32_t(0);
+      const uint16_t startBp = entry["sp"] | uint16_t(0);
+      const uint16_t endBp = entry["ep"] | uint16_t(0);
+      if (startEpoch <= 0 || endEpoch <= startEpoch || dur < 10) {
+        sessions.remove(i);
+        dirty = true;
+        continue;
+      }
+      const float deltaPct = static_cast<float>(static_cast<int32_t>(endBp) - static_cast<int32_t>(startBp)) / 100.0f;
+      const float endPct = static_cast<float>(endBp) / 100.0f;
+      if (BookOrbitClient::syncReadingSession(fileId, startEpoch, endEpoch, dur, deltaPct, endPct)) {
+        sessions.remove(i);
+        dirty = true;
+        anyPushed = true;
+      }
+    }
+    if (sessions.size() == 0) {
+      doc.remove("pendingSessions");
+      dirty = true;
+    }
+  }
+
+  if ((doc["pendingFinished"] | false) && !bookId.empty()) {
+    if (BookOrbitClient::syncBookReadStatus(bookId, "finished")) {
+      doc["pendingFinished"] = false;
+      doc["markedFinished"] = true;
+      dirty = true;
+      anyPushed = true;
+    }
+  }
+
+  if (dirty) {
+    HalFile metaFile;
+    if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
+      serializeJson(doc, metaFile);
+      metaFile.close();
+      if (outUpdatedFile) *outUpdatedFile = true;
+    }
+  }
+  return anyPushed;
+}
+
+}  // namespace
+
 void BookOrbitClient::recordBookProgress(const std::string& bookPath, float progressRatio, const bool forcePush) {
   if (!BOOKORBIT_STORE.isEnabled()) return;
   const std::string metaPath = bookPath + ".meta.json";
   if (!Storage.exists(metaPath.c_str())) return;
 
   std::string fileContent;
-  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, fileContent)) {
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), META_FILE_MAX_BYTES, fileContent)) {
     return;
   }
 
@@ -614,13 +852,21 @@ void BookOrbitClient::recordBookProgress(const std::string& bookPath, float prog
   if (err) return;
 
   const std::string fileId = jsonVariantToIdString(doc["bookorbit"]["fileId"]);
+  const std::string bookId = jsonVariantToIdString(doc["bookorbit"]["bookId"]);
   if (fileId.empty()) return;
 
   doc["progress"] = progressRatio;
+  if (progressRatio >= 0.995f && !(doc["markedFinished"] | false)) {
+    doc["pendingFinished"] = true;
+  }
 
   bool synced = false;
   if ((forcePush || BOOKORBIT_STORE.getSyncOnClose()) && WiFi.status() == WL_CONNECTED) {
     synced = syncReadingProgress(fileId, progressRatio);
+    if ((doc["pendingFinished"] | false) && !bookId.empty() && syncBookReadStatus(bookId, "finished")) {
+      doc["pendingFinished"] = false;
+      doc["markedFinished"] = true;
+    }
   }
 
   doc["pendingSync"] = !synced;
@@ -630,6 +876,10 @@ void BookOrbitClient::recordBookProgress(const std::string& bookPath, float prog
     serializeJson(doc, metaFile);
     metaFile.close();
   }
+
+  if ((forcePush || BOOKORBIT_STORE.getSyncOnClose()) && WiFi.status() == WL_CONNECTED) {
+    flushMetaFile(metaPath);
+  }
 }
 
 void BookOrbitClient::syncPendingProgress() {
@@ -637,57 +887,16 @@ void BookOrbitClient::syncPendingProgress() {
     return;
   }
 
-  const std::string downloadDir = getDownloadDir();
-  auto dir = Storage.open(downloadDir.c_str());
-  if (!dir || !dir.isDirectory()) {
-    return;
-  }
-
-  dir.rewindDirectory();
   std::vector<std::string> metaFiles;
-  char nameBuf[128];
-  for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
-    if (entry.isDirectory()) continue;
-    entry.getName(nameBuf, sizeof(nameBuf));
-    const std::string name(nameBuf);
-    if (name.length() > 10 && name.rfind(".meta.json") == name.length() - 10) {
-      metaFiles.push_back(downloadDir + "/" + name);
-    }
-  }
-
+  collectMetaFiles(getDownloadDir(), metaFiles);
   for (const auto& metaPath : metaFiles) {
-    std::string content;
-    if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) continue;
-
-    JsonDocument doc;
-    if (deserializeJson(doc, content)) continue;
-
-    const bool pendingSync = doc["pendingSync"] | false;
-    const std::string fileId = jsonVariantToIdString(doc["bookorbit"]["fileId"]);
-    if (pendingSync && !fileId.empty()) {
-      const float progress = doc["progress"] | 0.0f;
-      LOG_INF("BKO", "Syncing pending progress %.2f for file %s", progress, fileId.c_str());
-      if (syncReadingProgress(fileId, progress)) {
-        doc["pendingSync"] = false;
-        HalFile metaFile;
-        if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
-          serializeJson(doc, metaFile);
-          metaFile.close();
-        }
-      }
-    }
+    flushMetaFile(metaPath);
   }
 }
 
 bool BookOrbitClient::syncReadingProgress(const std::string& fileId, float progressPercent, int currentPosition,
                                           int durationSeconds) {
   if (!BOOKORBIT_STORE.isConfigured() || fileId.empty()) {
-    return false;
-  }
-
-  std::string token;
-  std::string errMsg;
-  if (!ensureAuthenticated(token, errMsg)) {
     return false;
   }
 
@@ -724,7 +933,7 @@ bool BookOrbitClient::syncReadingProgress(const std::string& fileId, float progr
 
   std::string response;
   int status = 0;
-  const bool ok = HttpDownloader::putJson(url, jsonBody, response, token, &status);
+  const bool ok = sendJsonWithAuthRetry("PUT", url, jsonBody, response, &status);
 
   if (!ok) {
     LOG_ERR("BKO", "Progress sync failed (HTTP %d)", status);
@@ -735,12 +944,77 @@ bool BookOrbitClient::syncReadingProgress(const std::string& fileId, float progr
   return true;
 }
 
+bool BookOrbitClient::syncReadingSession(const std::string& fileId, const int64_t startEpoch, const int64_t endEpoch,
+                                         const uint32_t durationSeconds, const float progressDeltaPct,
+                                         const float endProgressPct) {
+  if (!BOOKORBIT_STORE.isConfigured() || fileId.empty() || startEpoch <= 0 || endEpoch <= startEpoch ||
+      durationSeconds < 10) {
+    return false;
+  }
+
+  char startIso[32];
+  char endIso[32];
+  if (!formatIsoUtc(startEpoch, startIso, sizeof(startIso)) || !formatIsoUtc(endEpoch, endIso, sizeof(endIso))) {
+    return false;
+  }
+
+  char sessionId[64];
+  snprintf(sessionId, sizeof(sessionId), "cp-%s-%lld", fileId.c_str(), static_cast<long long>(startEpoch));
+
+  JsonDocument doc;
+  doc["sessionId"] = sessionId;
+  doc["startedAt"] = startIso;
+  doc["endedAt"] = endIso;
+  doc["durationSeconds"] = durationSeconds;
+  doc["progressDelta"] = progressDeltaPct;
+  doc["endProgress"] = std::clamp(endProgressPct, 0.0f, 100.0f);
+  doc["sessionType"] = "read";
+
+  std::string jsonBody;
+  serializeJson(doc, jsonBody);
+
+  const std::string url = cleanBaseUrl(BOOKORBIT_STORE.getServerUrl()) + "/api/v1/books/files/" + fileId + "/sessions";
+  std::string response;
+  int status = 0;
+  const bool ok = sendJsonWithAuthRetry("POST", url, jsonBody, response, &status);
+  if (!ok) {
+    LOG_ERR("BKO", "Session sync failed for file %s (HTTP %d)", fileId.c_str(), status);
+    return false;
+  }
+
+  LOG_INF("BKO", "Synced reading session (%us) for file %s", (unsigned)durationSeconds, fileId.c_str());
+  return true;
+}
+
+bool BookOrbitClient::syncBookReadStatus(const std::string& bookId, const char* status) {
+  if (!BOOKORBIT_STORE.isConfigured() || bookId.empty() || !status || status[0] == '\0') {
+    return false;
+  }
+
+  JsonDocument doc;
+  doc["status"] = status;
+  std::string jsonBody;
+  serializeJson(doc, jsonBody);
+
+  const std::string url = cleanBaseUrl(BOOKORBIT_STORE.getServerUrl()) + "/api/v1/books/" + bookId + "/status";
+  std::string response;
+  int httpStatus = 0;
+  const bool ok = sendJsonWithAuthRetry("PATCH", url, jsonBody, response, &httpStatus);
+  if (!ok) {
+    LOG_ERR("BKO", "Status update failed for book %s (HTTP %d)", bookId.c_str(), httpStatus);
+    return false;
+  }
+
+  LOG_INF("BKO", "Updated book %s status to %s", bookId.c_str(), status);
+  return true;
+}
+
 void BookOrbitClient::updateLocalSidecarProgress(const std::string& bookPath, float serverRatio) {
   const std::string metaPath = bookPath + ".meta.json";
   if (!Storage.exists(metaPath.c_str())) return;
 
   std::string fileContent;
-  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, fileContent)) return;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), META_FILE_MAX_BYTES, fileContent)) return;
 
   JsonDocument doc;
   if (deserializeJson(doc, fileContent)) return;
@@ -773,7 +1047,7 @@ bool BookOrbitClient::checkAndConsumeRemoteProgress(const std::string& bookPath,
   if (!Storage.exists(metaPath.c_str())) return false;
 
   std::string fileContent;
-  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, fileContent)) return false;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), META_FILE_MAX_BYTES, fileContent)) return false;
 
   JsonDocument doc;
   if (deserializeJson(doc, fileContent)) return false;
@@ -798,7 +1072,7 @@ bool BookOrbitClient::checkAndConsumeRemoteProgress(const std::string& bookPath,
 // records it in the sidecar for the reader to jump to. Returns true if the sidecar was updated.
 static bool pullOneBook(const std::string& metaPath, const std::string& token) {
   std::string content;
-  if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) return false;
+  if (!Storage.readFileToString("BKO", metaPath.c_str(), META_FILE_MAX_BYTES, content)) return false;
 
   JsonDocument doc;
   if (deserializeJson(doc, content)) return false;
@@ -873,22 +1147,10 @@ bool BookOrbitClient::pullRemoteProgress(int* outUpdatedCount) {
     return false;
   }
 
-  const std::string downloadDir = getDownloadDir();
-  auto dir = Storage.open(downloadDir.c_str());
-  if (!dir || !dir.isDirectory()) {
-    return false;
-  }
-
-  dir.rewindDirectory();
   std::vector<std::string> metaFiles;
-  char nameBuf[128];
-  for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
-    if (entry.isDirectory()) continue;
-    entry.getName(nameBuf, sizeof(nameBuf));
-    const std::string name(nameBuf);
-    if (name.length() > 10 && name.rfind(".meta.json") == name.length() - 10) {
-      metaFiles.push_back(downloadDir + "/" + name);
-    }
+  collectMetaFiles(getDownloadDir(), metaFiles);
+  if (metaFiles.empty()) {
+    return false;
   }
 
   int updated = 0;
@@ -908,45 +1170,13 @@ bool BookOrbitClient::syncAllProgress(int* outPushedCount, int* outPulledCount) 
     return false;
   }
 
-  // 1. Scan and push any dirty local progress
+  // 1. Scan and push any dirty local progress, reading sessions, and finished states
   int pushed = 0;
-  const std::string downloadDir = getDownloadDir();
-  auto dir = Storage.open(downloadDir.c_str());
-  if (dir && dir.isDirectory()) {
-    dir.rewindDirectory();
-    std::vector<std::string> metaFiles;
-    char nameBuf[128];
-    for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
-      if (entry.isDirectory()) continue;
-      entry.getName(nameBuf, sizeof(nameBuf));
-      const std::string name(nameBuf);
-      if (name.length() > 10 && name.rfind(".meta.json") == name.length() - 10) {
-        metaFiles.push_back(downloadDir + "/" + name);
-      }
-    }
-
-    for (const auto& metaPath : metaFiles) {
-      std::string content;
-      if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) continue;
-
-      JsonDocument doc;
-      if (deserializeJson(doc, content)) continue;
-
-      const bool pendingSync = doc["pendingSync"] | false;
-      const std::string fileId = jsonVariantToIdString(doc["bookorbit"]["fileId"]);
-      if (pendingSync && !fileId.empty()) {
-        const float progress = doc["progress"] | 0.0f;
-        LOG_INF("BKO", "Syncing pending progress %.2f for file %s", progress, fileId.c_str());
-        if (syncReadingProgress(fileId, progress)) {
-          doc["pendingSync"] = false;
-          HalFile metaFile;
-          if (Storage.openFileForWrite("BKO", metaPath.c_str(), metaFile)) {
-            serializeJson(doc, metaFile);
-            metaFile.close();
-            pushed++;
-          }
-        }
-      }
+  std::vector<std::string> metaFiles;
+  collectMetaFiles(getDownloadDir(), metaFiles);
+  for (const auto& metaPath : metaFiles) {
+    if (flushMetaFile(metaPath)) {
+      pushed++;
     }
   }
   if (outPushedCount) *outPushedCount = pushed;
@@ -986,7 +1216,8 @@ bool BookOrbitClient::loadLocalBooks(std::vector<BookOrbitBook>& outBooks) {
 
     const std::string metaPath = epubPath + ".meta.json";
     std::string content;
-    if (Storage.exists(metaPath.c_str()) && Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) {
+    if (Storage.exists(metaPath.c_str()) &&
+        Storage.readFileToString("BKO", metaPath.c_str(), META_FILE_MAX_BYTES, content)) {
       JsonDocument doc;
       if (!deserializeJson(doc, content)) {
         b.title = doc["title"] | "";
@@ -1051,7 +1282,11 @@ bool BookOrbitClient::connectWifiBriefly(const unsigned long timeoutMs) {
   while ((WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) && millis() < deadline) {
     delay(100);
   }
-  return WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
+  const bool ok = WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0);
+  if (ok) {
+    trustedtime::startSync();
+  }
+  return ok;
 }
 
 void BookOrbitClient::wifiOff() {
@@ -1147,24 +1382,17 @@ bool BookOrbitClient::wasAutoSyncCooledDown(const uint32_t windowSeconds) {
 
 bool BookOrbitClient::hasPendingSync() {
   if (!BOOKORBIT_STORE.isEnabled()) return false;
-  const std::string downloadDir = getDownloadDir();
-  auto dir = Storage.open(downloadDir.c_str());
-  if (!dir || !dir.isDirectory()) return false;
+  std::vector<std::string> metaFiles;
+  collectMetaFiles(getDownloadDir(), metaFiles);
 
-  dir.rewindDirectory();
-  char nameBuf[128];
-  for (auto entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
-    if (entry.isDirectory()) continue;
-    entry.getName(nameBuf, sizeof(nameBuf));
-    const std::string name(nameBuf);
-    if (name.length() <= 10 || name.rfind(".meta.json") != name.length() - 10) continue;
-
+  for (const auto& metaPath : metaFiles) {
     std::string content;
-    const std::string metaPath = downloadDir + "/" + name;
-    if (!Storage.readFileToString("BKO", metaPath.c_str(), 2048, content)) continue;
+    if (!Storage.readFileToString("BKO", metaPath.c_str(), META_FILE_MAX_BYTES, content)) continue;
     JsonDocument doc;
     if (deserializeJson(doc, content)) continue;
-    if (doc["pendingSync"] | false) {
+    JsonArrayConst sessions = doc["pendingSessions"].as<JsonArrayConst>();
+    if ((doc["pendingSync"] | false) || (doc["pendingFinished"] | false) ||
+        (!sessions.isNull() && sessions.size() > 0)) {
       return true;
     }
   }

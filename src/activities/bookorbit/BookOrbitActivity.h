@@ -14,11 +14,15 @@ class BookOrbitActivity final : public CatalogActivity {
   enum class ShelfView {
     ROOT_MENU,
     LIBRARIES_LIST,
+    COLLECTIONS_LIST,
+    SMART_SCOPES_LIST,
     CURRENTLY_READING,
     WANT_TO_READ,
     RECENTLY_ADDED,
     ALL_BOOKS,
     LIBRARY_BOOKS,
+    COLLECTION_BOOKS,
+    SMART_SCOPE_BOOKS,
     SEARCH_RESULTS,
     SERIES_BOOKS
   };
@@ -62,8 +66,14 @@ class BookOrbitActivity final : public CatalogActivity {
   int parentPageBeforeSeries = 0;
 
   std::vector<BookOrbitLibrary> libraries;
+  std::vector<BookOrbitLibrary> collections;
+  std::vector<BookOrbitLibrary> smartScopes;
   int activeLibraryId = 0;
   std::string activeLibraryName;
+  int activeCollectionId = 0;
+  std::string activeCollectionName;
+  int activeSmartScopeId = 0;
+  std::string activeSmartScopeName;
   int activeSeriesId = 0;
   std::string activeSeriesName;
   std::string headerTitleStr = "BookOrbit";
@@ -91,7 +101,12 @@ class BookOrbitActivity final : public CatalogActivity {
   void launchInitialSearch();
   void finishSyncDialog();
   void loadRootMenu();
+  void loadSectionList(ShelfView view, const char* title, const char* loadingMsg, const char* errFallback,
+                       std::vector<BookOrbitLibrary>& target,
+                       bool (*fetcher)(std::vector<BookOrbitLibrary>&, std::string&));
   void loadLibrariesList();
+  void loadCollectionsList();
+  void loadSmartScopesList();
   void loadShelf(ShelfView view, int page = 0);
   void rebuildRowItems();
   void handleBookSelected(size_t index);
