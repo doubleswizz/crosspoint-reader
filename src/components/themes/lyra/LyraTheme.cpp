@@ -33,9 +33,7 @@ namespace {
 constexpr int hPaddingInSelection = 8;
 constexpr int cornerRadius = 6;
 constexpr int topHintButtonY = 345;
-constexpr int maxListValueWidth = 200;
 constexpr int mainMenuIconSize = 32;
-constexpr int mainMenuColumns = 2;
 int coverWidth = 0;
 
 bool isUprightIcon(UIIcon icon) { return icon == UIIcon::Search || icon == UIIcon::Sync; }
