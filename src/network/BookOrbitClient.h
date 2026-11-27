@@ -20,6 +20,7 @@ struct BookOrbitBook {
   std::string fileId;
   std::string title;
   std::string author;
+  std::string editionName;
   std::string description;
   std::string coverUrl;
   float progress = 0.0f;

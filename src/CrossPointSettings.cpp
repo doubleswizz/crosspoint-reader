@@ -4,6 +4,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <ObfuscationUtils.h>
+#include <VectorFontSupport.h>
 
 #include <algorithm>
 #include <cstring>
@@ -100,6 +101,9 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   // SD card font family name — always serialized so an explicit switch back to
   // built-in NotoSans ("") persists separately from an absent key.
   doc["sdFontFamilyName"] = sdFontFamilyName;
+  if (uiFontFamilyName[0] != '\0') {
+    doc["uiFontFamilyName"] = uiFontFamilyName;
+  }
   // Dictionary folder name — uses dynamic getter/setter in SettingsList, save manually
   if (dictionaryName[0] != '\0') {
     doc["dictionaryName"] = dictionaryName;
@@ -282,6 +286,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   }
 
   // SD card font family name — not in SettingsList, load manually
+  copyToField(uiFontFamilyName, doc["uiFontFamilyName"] | "", sizeof(uiFontFamilyName));
   if (doc["sdFontFamilyName"].is<const char*>()) {
     copyToField(sdFontFamilyName, doc["sdFontFamilyName"].as<const char*>(), sizeof(sdFontFamilyName));
   } else {
@@ -359,6 +364,11 @@ ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWid
   // Same layout as Display, so switching between them keeps the section cache.
   spec.imageRendering = imageRendering == IMAGES_DISPLAY_BW ? static_cast<uint8_t>(IMAGES_DISPLAY) : imageRendering;
   spec.focusReadingEnabled = focusReadingEnabled != 0;
+#if CROSSPOINT_VECTOR_FONTS
+  if (spec.embeddedStyle && publisherFonts <= static_cast<uint8_t>(PublisherFonts::All)) {
+    spec.publisherFonts = static_cast<PublisherFonts>(publisherFonts);
+  }
+#endif
   return spec;
 }
 

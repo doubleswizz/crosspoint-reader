@@ -66,6 +66,7 @@ void parseBookArray(JsonArrayConst array, std::vector<BookOrbitBook>& outBooks) 
       }
     }
 
+    book.editionName = item["editionName"] | "";
     book.description = item["description"] | "";
 
     if (item["seriesId"].is<int>()) {
@@ -517,31 +518,27 @@ bool BookOrbitClient::fetchBooks(const std::string& shelfOrEndpoint, std::vector
 
   // Build filter to keep ArduinoJson heap usage small
   JsonDocument filter;
-  if (isScroller) {
-    JsonObject bookFilter = filter["items"][0]["books"][0].to<JsonObject>();
+  auto applyBookFilter = [](JsonObject bookFilter, const bool includeSeriesCollapse) {
     bookFilter["id"] = true;
     bookFilter["title"] = true;
+    bookFilter["editionName"] = true;
     bookFilter["authors"] = true;
     bookFilter["seriesId"] = true;
     bookFilter["seriesName"] = true;
     bookFilter["seriesIndex"] = true;
+    if (includeSeriesCollapse) {
+      bookFilter["collapsedSeries"]["bookCount"] = true;
+      bookFilter["collapsedSeries"]["readCount"] = true;
+    }
     bookFilter["readingProgress"] = true;
     bookFilter["files"][0]["id"] = true;
     bookFilter["files"][0]["format"] = true;
+  };
+  if (isScroller) {
+    applyBookFilter(filter["items"][0]["books"][0].to<JsonObject>(), false);
   } else {
     filter["total"] = true;
-    JsonObject bookFilter = filter["items"][0].to<JsonObject>();
-    bookFilter["id"] = true;
-    bookFilter["title"] = true;
-    bookFilter["authors"] = true;
-    bookFilter["seriesId"] = true;
-    bookFilter["seriesName"] = true;
-    bookFilter["seriesIndex"] = true;
-    bookFilter["collapsedSeries"]["bookCount"] = true;
-    bookFilter["collapsedSeries"]["readCount"] = true;
-    bookFilter["readingProgress"] = true;
-    bookFilter["files"][0]["id"] = true;
-    bookFilter["files"][0]["format"] = true;
+    applyBookFilter(filter["items"][0].to<JsonObject>(), true);
   }
 
   JsonDocument doc;

@@ -5,6 +5,7 @@
 #include <FsHelpers.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
+#include <KOReaderCredentialStore.h>
 #include <KOReaderDocumentId.h>
 #include <Logging.h>
 #include <Memory.h>
@@ -24,8 +25,10 @@
 #include "SilentRestart.h"
 #include "WifiCredentialStore.h"
 #include "XtcReaderActivity.h"
+#include "activities/RenderLock.h"
 #include "components/UITheme.h"
 #include "network/BookOrbitClient.h"
+#include "sync/ReadingSessionLog.h"
 #include "util/PluginEvents.h"
 
 ReaderActivity::ReaderActivity(const char* name, GfxRenderer& renderer, MappedInputManager& mappedInput,
@@ -159,7 +162,10 @@ void ReaderActivity::onEnter() {
     APP_STATE.saveToFile();
   }
 
-  sdFontSystem.ensureLoaded(renderer);
+  {
+    RenderLock lock;
+    sdFontSystem.ensureLoaded(renderer);
+  }
   applyInitialOrientation();
 
   if (!loadBook()) {
@@ -240,17 +246,20 @@ void ReaderActivity::flushReaderSession() {
                                           readerSession.endProgressBp());
   }
 
-  if (!pluginevents::anySubscriber(pluginevents::Event::ReaderSession)) {
-    readerSession.reset();
-    return;
-  }
+  // The history uses the id progress sync uses, so the server files a session under the same book.
+  // Plugins always receive the binary id; hash the file only when one of the two needs it.
+  const bool subscribed = pluginevents::anySubscriber(pluginevents::Event::ReaderSession);
+  const bool binaryMatch = KOREADER_STORE.getMatchMethod() == DocumentMatchMethod::BINARY;
+  const std::string document = (subscribed || binaryMatch) ? KOReaderDocumentId::calculate(bookPath) : std::string();
+  readingSessionLog::append(binaryMatch ? document : KOReaderDocumentId::calculateFromFilename(bookPath), bookPath,
+                            getBookTitle(), readerSession.startTime(), readerSession.durationSeconds(),
+                            readerSession.startProgressBp(), readerSession.endProgressBp());
 
-  const std::string document = KOReaderDocumentId::calculate(bookPath);
   const bool validDocument =
       document.size() == 32 && std::all_of(document.begin(), document.end(), [](const unsigned char c) {
         return std::isdigit(c) || (c >= 'a' && c <= 'f');
       });
-  if (validDocument) {
+  if (subscribed && validDocument) {
     char startTime[24];
     char endTime[24];
     char duration[16];

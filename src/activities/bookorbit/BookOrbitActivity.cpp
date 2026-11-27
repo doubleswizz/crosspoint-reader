@@ -638,6 +638,10 @@ void BookOrbitActivity::rebuildRowItems() {
         subtitle += " #" + book.seriesIndex;
       }
     }
+    if (!book.editionName.empty()) {
+      if (!subtitle.empty()) subtitle += " \xC2\xB7 ";
+      subtitle += book.editionName;
+    }
 
     std::string val;
     if (book.isDownloaded) {
